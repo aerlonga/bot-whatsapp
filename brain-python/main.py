@@ -4,32 +4,60 @@ import whisper
 import os
 import PyPDF2
 import io
-import traceback
+import torch # Necessário para detectar sua RTX 4060
 
 app = FastAPI()
 
-# Carrega o Whisper (usaremos o modelo 'base' para o seu i7-10700 não sofrer)
-model_whisper = whisper.load_model("base")
+# --- CONFIGURAÇÃO DE HARDWARE ---
+# Detecta se você tem GPU (RTX 4060) ou se vai rodar no processador (PC Fraco)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Sistema iniciado usando: {device.upper()}")
+
+# Carregamento do Whisper Otimizado
+# 'medium' é perfeito para sua 4060. Para PC fraco, use 'tiny' ou 'base'.
+model_whisper = whisper.load_model("medium", device=device)
+
+# --- DEFINIÇÃO DE MODELOS (Centralizado para facilitar o README) ---
+# Altere aqui e mudará no bot todo:
+MODELO_TEXTO = "llama3.1:8b" # Recomendado para RTX 4060
+# MODELO_TEXTO = "gpt-oss:20b"   # Se quiser testar o limite (será lento)
+# MODELO_TEXTO = "llama3.2:3b"   # Para PC Fraco / Sem Placa
+
+MODELO_VISAO = "minicpm-v"     # RTX 4060 (Lê textos e detalhes)
+# MODELO_VISAO = "moondream"     # PC Fraco
+
+SYSTEM_PROMPT = (
+    "Você é um assistente inteligente e versátil. "
+    "REGRA PRINCIPAL: Identifique o idioma do usuário e responda no MESMO idioma. "
+    "Se o usuário falar em Português, responda em Português. Se falar em Inglês, responda em Inglês. "
+    "Nunca misture idiomas na mesma frase (nada de portunhol). "
+    "Seja direto, prestativo e mantenha o tom profissional."
+)
 
 @app.post("/chat")
 async def chat(data: dict):
     try:
-        response = ollama.chat(model='llama3.2:3b', messages=data.get("messages", []))
+        # Injetamos o System Prompt no início da conversa
+        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+        messages.extend(data.get("messages", []))
+        
+        response = ollama.chat(model=MODELO_TEXTO, messages=messages)
         return {"reply": response['message']['content']}
     except Exception as e:
-        return {"reply": f"⚠️ ERRO DE TEXTO PYTHON: {str(e)}"}
+        return {"reply": f"ERRO DE TEXTO: {str(e)}"}
 
 @app.post("/vision")
 async def vision(prompt: str = Form("Descreva esta imagem"), file: UploadFile = File(...)):
     try:
         img_bytes = await file.read()
-        response = ollama.chat(model='moondream', messages=[{
-        # response = ollama.chat(model='llama3.2-vision', messages=[{
-            'role': 'user', 'content': prompt, 'images': [img_bytes]
-        }])
+        # O MiniCPM-V também obedece ao prompt de sistema
+        response = ollama.chat(model=MODELO_VISAO, messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': prompt, 'images': [img_bytes]}
+        ])
         return {"reply": response['message']['content']}
     except Exception as e:
-        return {"reply": f"🤖 ERRO DE IMAGEM NO PYTHON:\n{str(e)}"}
+        return {"reply": f"ERRO DE IMAGEM: {str(e)}"}
 
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
@@ -38,20 +66,18 @@ async def transcribe(file: UploadFile = File(...)):
         with open("temp_audio.ogg", "wb") as f:
             f.write(content)
             
-        # fp16=False adicionado para o warning no CPU sumir
-        result = model_whisper.transcribe("temp_audio.ogg", fp16=False)
+        # fp16=True só funciona em GPU (RTX). Se for CPU, usamos False.
+        use_fp16 = True if device == "cuda" else False
+        result = model_whisper.transcribe("temp_audio.ogg", fp16=use_fp16)
         
-        # Após transcrever, pedimos para o Llama 3b dar uma resposta inteligente
-        ai_res = ollama.chat(model='llama3.2:3b', messages=[
-            {'role': 'system', 'content': 'O usuário enviou um áudio que diz o seguinte:'},
-            {'role': 'user', 'content': result["text"]}
+        # Aqui a IA processa o texto do áudio seguindo a regra do idioma
+        ai_res = ollama.chat(model=MODELO_TEXTO, messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': f"O usuário enviou um áudio com este conteúdo: {result['text']}. Responda adequadamente."}
         ])
         return {"reply": ai_res['message']['content']}
     except Exception as e:
-        import traceback
-        erro = traceback.format_exc()
-        print(erro) # Imprime no terminal local do Python para vermos melhor
-        return {"reply": f"🎧 ERRO DE ÁUDIO NO PYTHON:\n{str(e)}"}
+        return {"reply": f"ERRO DE ÁUDIO: {str(e)}"}
 
 @app.post("/pdf")
 async def read_pdf(file: UploadFile = File(...)):
@@ -60,15 +86,17 @@ async def read_pdf(file: UploadFile = File(...)):
         pdf_reader = PyPDF2.PdfReader(io.BytesIO(content))
         text = ""
         for page in pdf_reader.pages:
-            text += page.extract_text()
+            extracted = page.extract_text()
+            if extracted: text += extracted
         
-        ai_res = ollama.chat(model='llama3.2:3b', messages=[
-            {'role': 'system', 'content': 'Você acabou de ler este PDF. Resuma-o brevemente:'},
-            {'role': 'user', 'content': text[:4000]} 
+        # Aumentado o texto para não estourar o contexto do Llama 3.1
+        ai_res = ollama.chat(model=MODELO_TEXTO, messages=[
+            {'role': 'system', 'content': f"{SYSTEM_PROMPT} Resuma o PDF enviado pelo usuário."},
+            {'role': 'user', 'content': text[:8000]} 
         ])
         return {"reply": ai_res['message']['content']}
     except Exception as e:
-        return {"reply": f"📄 ERRO DE PDF NO PYTHON:\n{str(e)}"}
+        return {"reply": f"ERRO DE PDF: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn

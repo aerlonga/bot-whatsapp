@@ -3,114 +3,89 @@ const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const FormData = require('form-data');
 
-// Set para guardar quem já recebeu a apresentação (limpa se o bot reiniciar)
+// Configuração da API Python
+const PYTHON_API = "http://localhost:8000";
+const API_TIMEOUT = 60000; // 60 segundos (segurança para áudios longos)
+
 const introducedUsers = new Set();
-const ERROR_MSG = "Como sou um robo, posso errar, desculpe, não entendi. tente novamente. esperando com que o usuario envie novamente";
+const ERROR_MSG = "🤖 *Ops!* Tive um probleminha para processar isso agora. Pode tentar mandar de novo em alguns segundos?";
 
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: { 
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        headless: true 
     }
 });
 
 client.on('qr', qr => qrcode.generate(qr, { small: true }));
-
-client.on('ready', () => console.log('🚀 Ponte Multimodal Ativa!'));
+client.on('ready', () => console.log('🚀 Ponte Multimodal Ativa e Conectada!'));
 
 client.on('message', async msg => {
-    // 1. Bloqueia mensagens de GRUPOS
+    // Ignorar mensagens em grupos
     if (msg.from.includes('@g.us')) return;
 
     try {
         const contact = await msg.getContact();
-
-        // 2. Bloqueia mensagens de CONTAS COMERCIAIS
-        if (contact.isBusiness) {
-            console.log(`🚫 Ignorando conta comercial: ${contact.number}`);
-            return;
-        }
+        // Ignorar contas de WhatsApp Business (para evitar loop bot com bot)
+        if (contact.isBusiness) return;
 
         const userId = msg.from;
-        console.log(`📩 Mensagem de: ${contact.pushname || contact.number}`);
-
         let aiReply = "";
 
-        // Lógica de Processamento de Mídia
+        // Instância do Axios com timeout estendido para o processamento de IA
+        const api = axios.create({ baseURL: PYTHON_API, timeout: API_TIMEOUT });
+
         if (msg.hasMedia) {
-            console.log(`[Mídia] Detectou mídia do tipo: ${msg.type}`);
-            console.log(`[Mídia] Baixando a mídia do WhatsApp... (isso pode demorar se for muito grande)`);
+            console.log(`[Mídia] Processando ${msg.type} de ${contact.pushname}...`);
             const media = await msg.downloadMedia();
-            
-            if (!media) {
-                throw new Error("Falha ao baixar a mídia do WhatsApp (veio vazia).");
-            }
-            console.log(`[Mídia] Mídia baixada com sucesso! Tamanho aprox: ${(media.data.length / 1024 / 1024).toFixed(2)} MB`);
-            
-            const form = new FormData();
-            
-            // Converte o base64 do WhatsApp para Buffer para enviar ao Python
-            console.log(`[Mídia] Convertendo base64 para Buffer...`);
+            if (!media) throw new Error("Mídia vazia");
+
             const buffer = Buffer.from(media.data, 'base64');
+            const form = new FormData();
 
             if (msg.type === 'image') {
-                console.log(`[Mídia-Imagem] Montando requisição para enviar para o Python /vision...`);
-                form.append('file', buffer, { filename: 'image.jpg' });
-                form.append('prompt', msg.body || "Descreva esta imagem");
-                console.log(`[Mídia-Imagem] Enviando o POST para http://localhost:8000/vision`);
-                const res = await axios.post('http://localhost:8000/vision', form);
-                console.log(`[Mídia-Imagem] Resposta do Python recebida com sucesso!`);
+                form.append('file', buffer, { filename: 'image.jpg', contentType: 'image/jpeg' });
+                form.append('prompt', msg.body || "Descreva esta imagem em detalhes");
+                const res = await api.post('/vision', form, { headers: form.getHeaders() });
                 aiReply = res.data.reply;
             } 
             else if (msg.type === 'audio' || msg.type === 'ptt') {
-                console.log(`[Mídia-Áudio] Montando requisição para enviar para o Python /transcribe...`);
-                form.append('file', buffer, { filename: 'audio.ogg' });
-                console.log(`[Mídia-Áudio] Enviando o POST para http://localhost:8000/transcribe...`);
-                const res = await axios.post('http://localhost:8000/transcribe', form);
-                console.log(`[Mídia-Áudio] Resposta do Python recebida com sucesso!`);
+                // ptt = Push To Talk (Áudio gravado na hora)
+                form.append('file', buffer, { filename: 'audio.ogg', contentType: 'audio/ogg' });
+                const res = await api.post('/transcribe', form, { headers: form.getHeaders() });
                 aiReply = res.data.reply;
             }
             else if (media.mimetype === 'application/pdf') {
-                console.log(`[Mídia-PDF] Montando requisição para enviar para o Python /pdf...`);
-                form.append('file', buffer, { filename: 'doc.pdf' });
-                console.log(`[Mídia-PDF] Enviando o POST para http://localhost:8000/pdf...`);
-                const res = await axios.post('http://localhost:8000/pdf', form);
-                console.log(`[Mídia-PDF] Resposta do Python recebida com sucesso!`);
+                form.append('file', buffer, { filename: 'doc.pdf', contentType: 'application/pdf' });
+                const res = await api.post('/pdf', form, { headers: form.getHeaders() });
                 aiReply = res.data.reply;
             } else {
-                console.log(`[Mídia-Desconhecida] Tipo de mídia não suportado: ${media.mimetype}`);
-                throw new Error("Mídia não suportada.");
+                // Ignorar outros tipos de arquivos/mídias não suportados
+                return;
             }
         } 
         else {
             // Processamento de Texto Normal
-            const res = await axios.post('http://localhost:8000/chat', {
+            const res = await api.post('/chat', {
                 messages: [{ role: 'user', content: msg.body }]
             });
             aiReply = res.data.reply;
         }
 
-        // Se o Python retornar erro ou estiver vazio
-        if (!aiReply || aiReply === "fail") throw new Error("AI Fail");
+        if (!aiReply) throw new Error("Sem resposta da IA (Backend retornou vazio)");
 
-        let finalMessage = "";
-
-        // Lógica de Apresentação (Apenas na primeira mensagem)
+        // Formatação da Mensagem Final com Introdução para novos usuários
+        let finalMessage = aiReply;
         if (!introducedUsers.has(userId)) {
-            finalMessage = "🤖\n" +
-                           "E aí! Sou o assistente de IA. Só passando pra avisar que agora este chat é automatizado, beleza? Segue a resposta:\n\n" + 
-                           aiReply;
-            
-            introducedUsers.add(userId); // Marca que o usuário já conhece o bot
-        } else {
-            finalMessage = aiReply;
+            finalMessage = `👋 *Olá, ${contact.pushname}!*\n\nSou o assistente inteligente do Aerlon. Vou processar sua mensagem agora:\n\n${aiReply}`;
+            introducedUsers.add(userId);
         }
 
-        // Responde o usuário
         await msg.reply(finalMessage);
         
     } catch (err) {
-        console.error("❌ Erro na ponte ou no cérebro:", err.message);
+        console.error("❌ Erro:", err.message);
         await msg.reply(ERROR_MSG);
     }
 });
