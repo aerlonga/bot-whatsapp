@@ -29,11 +29,15 @@ if PROFILE == "LOW":
     MODELO_TEXTO = "llama3.2:3b"
     MODELO_VISAO = "moondream"
     WHISPER_MODEL = "base"
+elif PROFILE == "LOW2":
+    MODELO_TEXTO = "llama3.2:3b"
+    MODELO_VISAO = "minicpm-v"
+    WHISPER_MODEL = "medium"
 elif PROFILE == "HIGH":
     MODELO_TEXTO = "gpt-oss:20b"
     MODELO_VISAO = "minicpm-v"
     WHISPER_MODEL = "medium"
-else:  # MED (padrão para RTX 4060)
+else:
     MODELO_TEXTO = "llama3.1:8b"
     MODELO_VISAO = "minicpm-v"
     WHISPER_MODEL = "medium"

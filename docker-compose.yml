@@ -1,5 +1,9 @@
 version: '3.8'
 
+networks:
+  bot-network:
+    driver: bridge
+
 services:
   redis:
     image: redis:alpine
@@ -7,6 +11,8 @@ services:
     ports:
       - "6379:6379"
     restart: unless-stopped
+    networks:
+      - bot-network
 
   brain-python:
     build: ./brain-python
@@ -23,13 +29,17 @@ services:
     environment:
       - AI_PROFILE=${AI_PROFILE}
       - OLLAMA_HOST=http://host.docker.internal:11434
+      - DATABASE_URL=${DATABASE_URL}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     depends_on:
       - redis
+      - postgres
     restart: unless-stopped
+    networks:
+      - bot-network
 
   bridge-node:
     build: ./bridge-node
@@ -37,10 +47,30 @@ services:
     depends_on:
       - redis
       - brain-python
-    volumes:
-      - ./bridge-node:/app
-      - /app/node_modules
-    env_file: .env
-    cap_add:
-      - SYS_ADMIN
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - PYTHON_API_URL=${PYTHON_API_URL}
     restart: unless-stopped
+    networks:
+      - bot-network
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: bot-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - bot-network
+
+volumes:
+  postgres_data:

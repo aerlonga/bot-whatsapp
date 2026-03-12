@@ -1,201 +1,281 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const { Telegraf } = require('telegraf');
+const { message } = require('telegraf/filters');
 const axios = require('axios');
 const FormData = require('form-data');
 const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
-// ============================================
-// CONFIGURAÇÃO
-// ============================================
-const PYTHON_API = process.env.PYTHON_API_URL || "http://localhost:8000";
-const API_TIMEOUT = 120000; // 120s (margem para modelos pesados)
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+if (!TELEGRAM_TOKEN) {
+    console.error('FATAL: Variável TELEGRAM_TOKEN não definida!');
+    process.exit(1);
+}
 
-const REDIS_HOST = process.env.REDIS_HOST || "localhost";
-const REDIS_PORT = parseInt(process.env.REDIS_PORT || "6379", 10);
+const PYTHON_API = process.env.PYTHON_API_URL || 'http://localhost:8000';
+const API_TIMEOUT = 300000;
+
+const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
+const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 
 const connection = new IORedis({
     host: REDIS_HOST,
     port: REDIS_PORT,
-    maxRetriesPerRequest: null // Exigido pelo BullMQ
+    maxRetriesPerRequest: null 
 });
 
 const chatQueue = new Queue('whatsapp-ai', { connection });
 
 const introducedUsers = new Set();
-const ERROR_MSG = "*Ops!* Tive um probleminha para processar isso agora. Pode tentar mandar de novo em alguns segundos?";
+const ERROR_MSG = '*Ops!* Tive um probleminha para processar isso agora. Pode tentar mandar de novo em alguns segundos?';
 
-// ============================================
-// CLIENTE WHATSAPP
-// ============================================
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',    // Evita crash por memória no Docker
-            '--disable-gpu',               // Chromium não precisa de GPU
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process'             // Mais estável dentro de containers
-        ],
-        headless: true
-    }
-});
+const bot = new Telegraf(TELEGRAM_TOKEN);
 
-client.on('qr', qr => qrcode.generate(qr, { small: true }));
-client.on('ready', () => {
-    console.log('Ponte Multimodal Ativa e Conectada!');
-    console.log(`API Python: ${PYTHON_API}`);
-    console.log(`Redis: ${REDIS_HOST}:${REDIS_PORT}`);
-});
+async function downloadTelegramFile(fileId) {
+    const fileLink = await bot.telegram.getFileLink(fileId);
+    const response = await axios.get(fileLink.href, { responseType: 'arraybuffer' });
+    return Buffer.from(response.data);
+}
 
-// ============================================
-// PRODUCER: Recebe mensagem → Joga na fila
-// ============================================
-client.on('message', async msg => {
-    // Ignorar mensagens em grupos, newsletters e transmissões
-    if (msg.from.includes('@g.us') || msg.from.includes('@newsletter') || msg.from.includes('@broadcast')) return;
+bot.on(message('text'), async (ctx) => {
+    const msg = ctx.message;
+    if (msg.chat.type !== 'private') return;
 
     try {
-        const contact = await msg.getContact();
-        // Ignorar contas de WhatsApp Business (evita loop bot-com-bot)
-        if (contact.isBusiness) return;
+        const chatId = String(msg.chat.id);
+        const pushname = msg.from.first_name || msg.from.username || 'Usuário';
 
-        // Prepara os dados do job
         const jobData = {
-            messageId: msg.id._serialized, // ID para permitir reações depois
-            chatId: msg.from,
-            body: msg.body,
-            type: msg.type,
-            hasMedia: msg.hasMedia,
-            pushname: contact.pushname || "Usuário",
+            messageId: String(msg.message_id),
+            chatId,
+            body: msg.text,
+            type: 'text',
+            hasMedia: false,
+            pushname,
             mediaData: null,
             mimetype: null
         };
 
-        // Se tem mídia, converte para base64 antes de por na fila
-        // (Redis trabalha com strings, não com Buffers brutos)
-        if (msg.hasMedia) {
-            const media = await msg.downloadMedia();
-            if (media) {
-                jobData.mediaData = media.data; // Já vem em base64 do whatsapp-web.js
-                jobData.mimetype = media.mimetype;
-            }
-        }
-
-        // Adiciona na fila e libera o WhatsApp imediatamente
         await chatQueue.add('process', jobData, {
-            removeOnComplete: 100, // Mantém últimos 100 jobs completos
-            removeOnFail: 50       // Mantém últimos 50 jobs com erro
+            removeOnComplete: 100,
+            removeOnFail: 50
         });
 
-        console.log(`Mensagem de ${contact.pushname || msg.from} na fila.`);
-
+        console.log(`[TEXTO] Mensagem de ${pushname} (${chatId}) na fila.`);
     } catch (err) {
-        console.error("Erro ao enfileirar:", err.message);
+        console.error('Erro ao enfileirar texto:', err.message);
     }
 });
 
-// ============================================
-// WORKER: Consome a fila, um por vez (GPU focus)
-// ============================================
-const worker = new Worker('whatsapp-ai', async job => {
+bot.on(message('photo'), async (ctx) => {
+    const msg = ctx.message;
+    if (msg.chat.type !== 'private') return;
+
+    try {
+        const chatId = String(msg.chat.id);
+        const pushname = msg.from.first_name || msg.from.username || 'Usuário';
+
+        const photo = msg.photo[msg.photo.length - 1];
+        const buffer = await downloadTelegramFile(photo.file_id);
+        const mediaData = buffer.toString('base64');
+
+        const jobData = {
+            messageId: String(msg.message_id),
+            chatId,
+            body: msg.caption || 'Descreva esta imagem em detalhes',
+            type: 'image',
+            hasMedia: true,
+            pushname,
+            mediaData,
+            mimetype: 'image/jpeg'
+        };
+
+        await chatQueue.add('process', jobData, {
+            removeOnComplete: 100,
+            removeOnFail: 50
+        });
+
+        console.log(`[FOTO] Imagem de ${pushname} (${chatId}) na fila.`);
+    } catch (err) {
+        console.error('Erro ao enfileirar foto:', err.message);
+    }
+});
+
+bot.on([message('voice'), message('audio')], async (ctx) => {
+    const msg = ctx.message;
+    if (msg.chat.type !== 'private') return;
+
+    try {
+        const chatId = String(msg.chat.id);
+        const pushname = msg.from.first_name || msg.from.username || 'Usuário';
+
+        const audioObj = msg.voice || msg.audio;
+        const buffer = await downloadTelegramFile(audioObj.file_id);
+        const mediaData = buffer.toString('base64');
+        const mimetype = audioObj.mime_type || 'audio/ogg';
+
+        const jobData = {
+            messageId: String(msg.message_id),
+            chatId,
+            body: null,
+            type: 'audio',
+            hasMedia: true,
+            pushname,
+            mediaData,
+            mimetype
+        };
+
+        await chatQueue.add('process', jobData, {
+            removeOnComplete: 100,
+            removeOnFail: 50
+        });
+
+        console.log(`[ÁUDIO] Áudio de ${pushname} (${chatId}) na fila.`);
+    } catch (err) {
+        console.error('Erro ao enfileirar áudio:', err.message);
+    }
+});
+
+bot.on(message('document'), async (ctx) => {
+    const msg = ctx.message;
+    if (msg.chat.type !== 'private') return;
+
+    const doc = msg.document;
+
+    if (doc.mime_type !== 'application/pdf') {
+        await ctx.reply('Apenas documentos PDF são suportados no momento.');
+        return;
+    }
+
+    try {
+        const chatId = String(msg.chat.id);
+        const pushname = msg.from.first_name || msg.from.username || 'Usuário';
+
+        const buffer = await downloadTelegramFile(doc.file_id);
+        const mediaData = buffer.toString('base64');
+
+        const jobData = {
+            messageId: String(msg.message_id),
+            chatId,
+            body: msg.caption || null,
+            type: 'document',
+            hasMedia: true,
+            pushname,
+            mediaData,
+            mimetype: 'application/pdf'
+        };
+
+        await chatQueue.add('process', jobData, {
+            removeOnComplete: 100,
+            removeOnFail: 50
+        });
+
+        console.log(`[PDF] Documento de ${pushname} (${chatId}) na fila.`);
+    } catch (err) {
+        console.error('Erro ao enfileirar documento:', err.message);
+    }
+});
+
+const worker = new Worker('whatsapp-ai', async (job) => {
     const { messageId, chatId, body, type, hasMedia, mediaData, mimetype, pushname } = job.data;
 
-    console.log(`Processando job ${job.id} de ${pushname}...`);
+    console.log(`Processando job ${job.id} de ${pushname} (${chatId})...`);
+
+    const telegramChatId = parseInt(chatId, 10);
 
     try {
         const api = axios.create({ baseURL: PYTHON_API, timeout: API_TIMEOUT });
-        let aiReply = "";
+        let aiReply = '';
 
-        // Busca a mensagem original e o chat
-        const [msg, chat] = await Promise.all([
-            client.getMessageById(messageId).catch(() => null),
-            client.getChatById(chatId)
-        ]);
+        const action = type === 'audio' ? 'record_voice' : (type === 'image' ? 'upload_photo' : 'typing');
+        await bot.telegram.sendChatAction(telegramChatId, action);
+        const typingInterval = setInterval(() => {
+            bot.telegram.sendChatAction(telegramChatId, action).catch(() => {});
+        }, 5000);
 
-        // Feedback visual instantâneo: Reações
-        if (msg && msg.react) {
-            try {
-                if (type === 'image') await msg.react('🔍');
-                else if (mimetype === 'application/pdf') await msg.react('📄');
-                else if (type === 'audio' || type === 'ptt') await msg.react('🎧');
-            } catch (reactErr) {
-                console.warn("Não foi possível reagir à mensagem:", reactErr.message);
-            }
-        }
+        try {
+            if (hasMedia && mediaData) {
+                const buffer = Buffer.from(mediaData, 'base64');
+                const form = new FormData();
 
-        // Status de "Digitando..." ou "Gravando..."
-        if (type === 'audio' || type === 'ptt') {
-            await chat.sendStateRecording();
-        } else {
-            await chat.sendStateTyping();
-        }
-
-        if (hasMedia && mediaData) {
-            // Reconstrói o Buffer a partir do base64
-            const buffer = Buffer.from(mediaData, 'base64');
-            const form = new FormData();
-
-            if (type === 'image') {
-                form.append('file', buffer, { filename: 'image.jpg', contentType: 'image/jpeg' });
-                form.append('prompt', body || "Descreva esta imagem em detalhes");
-                const res = await api.post('/vision', form, { headers: form.getHeaders() });
+                if (type === 'image') {
+                    form.append('file', buffer, { filename: 'image.jpg', contentType: 'image/jpeg' });
+                    form.append('prompt', body || 'Descreva esta imagem em detalhes');
+                    const res = await api.post('/vision', form, { headers: form.getHeaders() });
+                    aiReply = res.data.reply;
+                } else if (type === 'audio') {
+                    form.append('file', buffer, { filename: 'audio.ogg', contentType: mimetype || 'audio/ogg' });
+                    const res = await api.post('/transcribe', form, { headers: form.getHeaders() });
+                    aiReply = res.data.reply;
+                } else if (mimetype === 'application/pdf') {
+                    form.append('file', buffer, { filename: 'doc.pdf', contentType: 'application/pdf' });
+                    const res = await api.post('/pdf', form, { headers: form.getHeaders() });
+                    aiReply = res.data.reply;
+                }
+            } else {
+                const res = await api.post('/chat', {
+                    messages: [{ role: 'user', content: body }]
+                });
                 aiReply = res.data.reply;
             }
-            else if (type === 'audio' || type === 'ptt') {
-                // ptt = Push To Talk (áudio gravado na hora)
-                form.append('file', buffer, { filename: 'audio.ogg', contentType: 'audio/ogg' });
-                const res = await api.post('/transcribe', form, { headers: form.getHeaders() });
-                aiReply = res.data.reply;
-            }
-            else if (mimetype === 'application/pdf') {
-                form.append('file', buffer, { filename: 'doc.pdf', contentType: 'application/pdf' });
-                const res = await api.post('/pdf', form, { headers: form.getHeaders() });
-                aiReply = res.data.reply;
-            }
-            else {
-                // Tipo de mídia não suportado — ignora silenciosamente
-                console.log(`Mídia ${type} (${mimetype}) não suportada. Ignorando.`);
-                return;
-            }
-        }
-        else {
-            // Processamento de Texto Normal
-            const res = await api.post('/chat', {
-                messages: [{ role: 'user', content: body }]
-            });
-            aiReply = res.data.reply;
+        } finally {
+            clearInterval(typingInterval);
         }
 
-        if (!aiReply) throw new Error("Sem resposta da IA (Backend retornou vazio)");
+        if (!aiReply) throw new Error('Sem resposta da IA (Backend retornou vazio)');
 
-        // Formatação da Mensagem Final com Introdução para novos usuários
         let finalMessage = aiReply;
         if (!introducedUsers.has(chatId)) {
-            finalMessage = `*Olá, ${pushname}!*\n\nSou o assistente inteligente do Aerlon. Vou processar sua mensagem agora:\n\n${aiReply}`;
+            finalMessage = `*Olá, ${pushname}!*\n\nSou o assistente inteligente do Aerlon. Enquanto ele não responde, precisa de algo?\n\n${aiReply}`;
             introducedUsers.add(chatId);
         }
 
-        await client.sendMessage(chatId, finalMessage);
+        const sendSafe = async (chatId, text) => {
+            try {
+                await bot.telegram.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+            } catch (err) {
+                if (err.description && err.description.includes('can\'t parse entities')) {
+                    console.warn('Falha no parser Markdown, enviando como texto simples...');
+                    await bot.telegram.sendMessage(chatId, text);
+                } else {
+                    throw err;
+                }
+            }
+        };
+
+        const MAX_LENGTH = 4000;
+        if (finalMessage.length > MAX_LENGTH) {
+            const lines = finalMessage.split('\n');
+            let currentChunk = '';
+
+            for (const line of lines) {
+                if ((currentChunk + line).length > MAX_LENGTH) {
+                    await sendSafe(telegramChatId, currentChunk);
+                    currentChunk = line + '\n';
+                } else {
+                    currentChunk += line + '\n';
+                }
+            }
+            if (currentChunk) await sendSafe(telegramChatId, currentChunk);
+        } else {
+            await sendSafe(telegramChatId, finalMessage);
+        }
+        
         console.log(`Resposta enviada para ${pushname}.`);
 
     } catch (err) {
         console.error(`Erro no job ${job.id}:`, err.message);
         try {
-            await client.sendMessage(chatId, ERROR_MSG);
+            await bot.telegram.sendMessage(telegramChatId, ERROR_MSG, { parse_mode: 'Markdown' });
         } catch (sendErr) {
-            console.error("Falha ao enviar mensagem de erro:", sendErr.message);
+            console.error('Falha ao enviar mensagem de erro:', sendErr.message);
         }
     }
 }, {
     connection,
-    concurrency: 1 // Uma tarefa por vez = GPU focada em 100% do poder
+    concurrency: 1
 });
 
-worker.on('completed', job => {
+worker.on('completed', (job) => {
     console.log(`Job ${job.id} concluído.`);
 });
 
@@ -203,5 +283,12 @@ worker.on('failed', (job, err) => {
     console.error(`Job ${job?.id} falhou:`, err.message);
 });
 
-console.log('Inicializando ponte WhatsApp com filas BullMQ...');
-client.initialize();
+
+bot.launch().then(() => {
+    console.log('Ponte Telegram com filas BullMQ ativa!');
+    console.log(`API Python: ${PYTHON_API}`);
+    console.log(`Redis: ${REDIS_HOST}:${REDIS_PORT}`);
+});
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));

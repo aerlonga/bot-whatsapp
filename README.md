@@ -111,6 +111,7 @@ AI_PROFILE=MED
 | Perfil | Texto | Visão | Whisper | Requisitos |
 |--------|-------|-------|---------|------------|
 | `LOW` | llama3.2:3b | moondream | base | Apenas CPU |
+| `LOW2` | llama3.2:3b | minicpm-v | medium | Apenas CPU OU RTX 4060 (8GB VRAM)|
 | `MED` | llama3.1:8b | minicpm-v | medium | RTX 4060 (8GB VRAM) |
 | `HIGH` | gpt-oss:20b | minicpm-v | medium | GPU 12GB+ VRAM |
 
@@ -124,13 +125,13 @@ AI_PROFILE=MED
 O Docker roda em uma rede interna. Para o container Python alcançar o Ollama no host:
 
 ```bash
-# Rode ANTES do docker-compose (ou configure no systemd para ser permanente)
-export OLLAMA_HOST=0.0.0.0
-ollama serve
-```
+# Opção 1: Modo manual com alta performance (Mantém modelo na VRAM por 24h)
+OLLAMA_KEEP_ALIVE=24h OLLAMA_HOST=0.0.0.0 ollama serve
 
-```bash
-# Para parar o ollama
+# Opção 2: Reiniciar o serviço (se instalado via instalador padrão)
+sudo systemctl restart ollama
+
+# Para parar o serviço totalmente
 sudo systemctl stop ollama
 ```
 
