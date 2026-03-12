@@ -2,117 +2,206 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const FormData = require('form-data');
+const { Queue, Worker } = require('bullmq');
+const IORedis = require('ioredis');
 
-// Set para guardar quem já recebeu a apresentação (limpa se o bot reiniciar)
+// ============================================
+// CONFIGURAÇÃO
+// ============================================
+const PYTHON_API = process.env.PYTHON_API_URL || "http://localhost:8000";
+const API_TIMEOUT = 120000; // 120s (margem para modelos pesados)
+
+const REDIS_HOST = process.env.REDIS_HOST || "localhost";
+const REDIS_PORT = parseInt(process.env.REDIS_PORT || "6379", 10);
+
+const connection = new IORedis({
+    host: REDIS_HOST,
+    port: REDIS_PORT,
+    maxRetriesPerRequest: null // Exigido pelo BullMQ
+});
+
+const chatQueue = new Queue('whatsapp-ai', { connection });
+
 const introducedUsers = new Set();
-const ERROR_MSG = "Como sou um robo, posso errar, desculpe, não entendi. tente novamente. esperando com que o usuario envie novamente";
+const ERROR_MSG = "*Ops!* Tive um probleminha para processar isso agora. Pode tentar mandar de novo em alguns segundos?";
 
+// ============================================
+// CLIENTE WHATSAPP
+// ============================================
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: { 
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+    puppeteer: {
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',    // Evita crash por memória no Docker
+            '--disable-gpu',               // Chromium não precisa de GPU
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process'             // Mais estável dentro de containers
+        ],
+        headless: true
     }
 });
 
 client.on('qr', qr => qrcode.generate(qr, { small: true }));
+client.on('ready', () => {
+    console.log('Ponte Multimodal Ativa e Conectada!');
+    console.log(`API Python: ${PYTHON_API}`);
+    console.log(`Redis: ${REDIS_HOST}:${REDIS_PORT}`);
+});
 
-client.on('ready', () => console.log('🚀 Ponte Multimodal Ativa!'));
-
+// ============================================
+// PRODUCER: Recebe mensagem → Joga na fila
+// ============================================
 client.on('message', async msg => {
-    // 1. Bloqueia mensagens de GRUPOS
-    if (msg.from.includes('@g.us')) return;
+    // Ignorar mensagens em grupos, newsletters e transmissões
+    if (msg.from.includes('@g.us') || msg.from.includes('@newsletter') || msg.from.includes('@broadcast')) return;
 
     try {
         const contact = await msg.getContact();
+        // Ignorar contas de WhatsApp Business (evita loop bot-com-bot)
+        if (contact.isBusiness) return;
 
-        // 2. Bloqueia mensagens de CONTAS COMERCIAIS
-        if (contact.isBusiness) {
-            console.log(`🚫 Ignorando conta comercial: ${contact.number}`);
-            return;
+        // Prepara os dados do job
+        const jobData = {
+            messageId: msg.id._serialized, // ID para permitir reações depois
+            chatId: msg.from,
+            body: msg.body,
+            type: msg.type,
+            hasMedia: msg.hasMedia,
+            pushname: contact.pushname || "Usuário",
+            mediaData: null,
+            mimetype: null
+        };
+
+        // Se tem mídia, converte para base64 antes de por na fila
+        // (Redis trabalha com strings, não com Buffers brutos)
+        if (msg.hasMedia) {
+            const media = await msg.downloadMedia();
+            if (media) {
+                jobData.mediaData = media.data; // Já vem em base64 do whatsapp-web.js
+                jobData.mimetype = media.mimetype;
+            }
         }
 
-        const userId = msg.from;
-        console.log(`📩 Mensagem de: ${contact.pushname || contact.number}`);
+        // Adiciona na fila e libera o WhatsApp imediatamente
+        await chatQueue.add('process', jobData, {
+            removeOnComplete: 100, // Mantém últimos 100 jobs completos
+            removeOnFail: 50       // Mantém últimos 50 jobs com erro
+        });
 
+        console.log(`Mensagem de ${contact.pushname || msg.from} na fila.`);
+
+    } catch (err) {
+        console.error("Erro ao enfileirar:", err.message);
+    }
+});
+
+// ============================================
+// WORKER: Consome a fila, um por vez (GPU focus)
+// ============================================
+const worker = new Worker('whatsapp-ai', async job => {
+    const { messageId, chatId, body, type, hasMedia, mediaData, mimetype, pushname } = job.data;
+
+    console.log(`Processando job ${job.id} de ${pushname}...`);
+
+    try {
+        const api = axios.create({ baseURL: PYTHON_API, timeout: API_TIMEOUT });
         let aiReply = "";
 
-        // Lógica de Processamento de Mídia
-        if (msg.hasMedia) {
-            console.log(`[Mídia] Detectou mídia do tipo: ${msg.type}`);
-            console.log(`[Mídia] Baixando a mídia do WhatsApp... (isso pode demorar se for muito grande)`);
-            const media = await msg.downloadMedia();
-            
-            if (!media) {
-                throw new Error("Falha ao baixar a mídia do WhatsApp (veio vazia).");
-            }
-            console.log(`[Mídia] Mídia baixada com sucesso! Tamanho aprox: ${(media.data.length / 1024 / 1024).toFixed(2)} MB`);
-            
-            const form = new FormData();
-            
-            // Converte o base64 do WhatsApp para Buffer para enviar ao Python
-            console.log(`[Mídia] Convertendo base64 para Buffer...`);
-            const buffer = Buffer.from(media.data, 'base64');
+        // Busca a mensagem original e o chat
+        const [msg, chat] = await Promise.all([
+            client.getMessageById(messageId).catch(() => null),
+            client.getChatById(chatId)
+        ]);
 
-            if (msg.type === 'image') {
-                console.log(`[Mídia-Imagem] Montando requisição para enviar para o Python /vision...`);
-                form.append('file', buffer, { filename: 'image.jpg' });
-                form.append('prompt', msg.body || "Descreva esta imagem");
-                console.log(`[Mídia-Imagem] Enviando o POST para http://localhost:8000/vision`);
-                const res = await axios.post('http://localhost:8000/vision', form);
-                console.log(`[Mídia-Imagem] Resposta do Python recebida com sucesso!`);
-                aiReply = res.data.reply;
-            } 
-            else if (msg.type === 'audio' || msg.type === 'ptt') {
-                console.log(`[Mídia-Áudio] Montando requisição para enviar para o Python /transcribe...`);
-                form.append('file', buffer, { filename: 'audio.ogg' });
-                console.log(`[Mídia-Áudio] Enviando o POST para http://localhost:8000/transcribe...`);
-                const res = await axios.post('http://localhost:8000/transcribe', form);
-                console.log(`[Mídia-Áudio] Resposta do Python recebida com sucesso!`);
+        // Feedback visual instantâneo: Reações
+        if (msg && msg.react) {
+            try {
+                if (type === 'image') await msg.react('🔍');
+                else if (mimetype === 'application/pdf') await msg.react('📄');
+                else if (type === 'audio' || type === 'ptt') await msg.react('🎧');
+            } catch (reactErr) {
+                console.warn("Não foi possível reagir à mensagem:", reactErr.message);
+            }
+        }
+
+        // Status de "Digitando..." ou "Gravando..."
+        if (type === 'audio' || type === 'ptt') {
+            await chat.sendStateRecording();
+        } else {
+            await chat.sendStateTyping();
+        }
+
+        if (hasMedia && mediaData) {
+            // Reconstrói o Buffer a partir do base64
+            const buffer = Buffer.from(mediaData, 'base64');
+            const form = new FormData();
+
+            if (type === 'image') {
+                form.append('file', buffer, { filename: 'image.jpg', contentType: 'image/jpeg' });
+                form.append('prompt', body || "Descreva esta imagem em detalhes");
+                const res = await api.post('/vision', form, { headers: form.getHeaders() });
                 aiReply = res.data.reply;
             }
-            else if (media.mimetype === 'application/pdf') {
-                console.log(`[Mídia-PDF] Montando requisição para enviar para o Python /pdf...`);
-                form.append('file', buffer, { filename: 'doc.pdf' });
-                console.log(`[Mídia-PDF] Enviando o POST para http://localhost:8000/pdf...`);
-                const res = await axios.post('http://localhost:8000/pdf', form);
-                console.log(`[Mídia-PDF] Resposta do Python recebida com sucesso!`);
+            else if (type === 'audio' || type === 'ptt') {
+                // ptt = Push To Talk (áudio gravado na hora)
+                form.append('file', buffer, { filename: 'audio.ogg', contentType: 'audio/ogg' });
+                const res = await api.post('/transcribe', form, { headers: form.getHeaders() });
                 aiReply = res.data.reply;
-            } else {
-                console.log(`[Mídia-Desconhecida] Tipo de mídia não suportado: ${media.mimetype}`);
-                throw new Error("Mídia não suportada.");
             }
-        } 
+            else if (mimetype === 'application/pdf') {
+                form.append('file', buffer, { filename: 'doc.pdf', contentType: 'application/pdf' });
+                const res = await api.post('/pdf', form, { headers: form.getHeaders() });
+                aiReply = res.data.reply;
+            }
+            else {
+                // Tipo de mídia não suportado — ignora silenciosamente
+                console.log(`Mídia ${type} (${mimetype}) não suportada. Ignorando.`);
+                return;
+            }
+        }
         else {
             // Processamento de Texto Normal
-            const res = await axios.post('http://localhost:8000/chat', {
-                messages: [{ role: 'user', content: msg.body }]
+            const res = await api.post('/chat', {
+                messages: [{ role: 'user', content: body }]
             });
             aiReply = res.data.reply;
         }
 
-        // Se o Python retornar erro ou estiver vazio
-        if (!aiReply || aiReply === "fail") throw new Error("AI Fail");
+        if (!aiReply) throw new Error("Sem resposta da IA (Backend retornou vazio)");
 
-        let finalMessage = "";
-
-        // Lógica de Apresentação (Apenas na primeira mensagem)
-        if (!introducedUsers.has(userId)) {
-            finalMessage = "🤖\n" +
-                           "E aí! Sou o assistente de IA. Só passando pra avisar que agora este chat é automatizado, beleza? Segue a resposta:\n\n" + 
-                           aiReply;
-            
-            introducedUsers.add(userId); // Marca que o usuário já conhece o bot
-        } else {
-            finalMessage = aiReply;
+        // Formatação da Mensagem Final com Introdução para novos usuários
+        let finalMessage = aiReply;
+        if (!introducedUsers.has(chatId)) {
+            finalMessage = `*Olá, ${pushname}!*\n\nSou o assistente inteligente do Aerlon. Vou processar sua mensagem agora:\n\n${aiReply}`;
+            introducedUsers.add(chatId);
         }
 
-        // Responde o usuário
-        await msg.reply(finalMessage);
-        
+        await client.sendMessage(chatId, finalMessage);
+        console.log(`Resposta enviada para ${pushname}.`);
+
     } catch (err) {
-        console.error("❌ Erro na ponte ou no cérebro:", err.message);
-        await msg.reply(ERROR_MSG);
+        console.error(`Erro no job ${job.id}:`, err.message);
+        try {
+            await client.sendMessage(chatId, ERROR_MSG);
+        } catch (sendErr) {
+            console.error("Falha ao enviar mensagem de erro:", sendErr.message);
+        }
     }
+}, {
+    connection,
+    concurrency: 1 // Uma tarefa por vez = GPU focada em 100% do poder
 });
 
+worker.on('completed', job => {
+    console.log(`Job ${job.id} concluído.`);
+});
+
+worker.on('failed', (job, err) => {
+    console.error(`Job ${job?.id} falhou:`, err.message);
+});
+
+console.log('Inicializando ponte WhatsApp com filas BullMQ...');
 client.initialize();

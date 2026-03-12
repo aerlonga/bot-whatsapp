@@ -1,84 +1,216 @@
 # bot-whatsapp
 
-Um bot de WhatsApp multimodal usando `whatsapp-web.js` no frontend (Node.js) e uma API poderosa no backend (Python com FastAPI) que utiliza **Ollama (Llama 3 e Moondream)** e **Whisper** para processar texto, áudio, imagens e PDFs.
+Um bot de WhatsApp multimodal com arquitetura de **microserviços** usando Docker Compose, filas Redis (BullMQ) e IA local (Ollama + Whisper). Processa **texto, áudio, imagens e PDFs** com suporte automático a GPU.
 
-## 🛠️ Pré-requisitos do Sistema
+## 📐 Arquitetura
 
-Antes de começar, garanta que você tem as seguintes ferramentas instaladas no seu computador:
-- **Node.js** (v18 ou superior) e **npm**
-- **Python** (v3.9 ou superior)
-- **Ollama**: [Baixe e instale o Ollama](https://ollama.com/)
-- **FFmpeg**: Necessário para o Whisper processar os áudios. (No Ubuntu: `sudo apt install ffmpeg`)
+```
+┌─────────────────┐    ┌──────────┐    ┌──────────────────┐    ┌──────────────┐
+│  WhatsApp Web   │───▶│  Bridge  │───▶│   Redis (Fila)   │───▶│    Brain     │
+│  (Usuário)      │◀───│  Node.js │◀───│   BullMQ Queue   │◀───│   Python     │
+└─────────────────┘    └──────────┘    └──────────────────┘    └──────┬───────┘
+                                                                      │
+                                                               ┌──────▼───────┐
+                                                               │   Ollama     │
+                                                               │  (Host GPU)  │
+                                                               └──────────────┘
+```
 
-## 🧠 Passo 1: Configurando a IA Local (Ollama)
+- **Bridge Node**: Recebe mensagens do WhatsApp e coloca na fila (Producer). Um Worker consome a fila e envia respostas.
+- **Redis**: Fila persistente. Se desligar o PC, as mensagens que estavam na fila serão processadas quando ligar de novo.
+- **Brain Python**: API FastAPI que processa texto (Ollama), imagens (MiniCPM-V/Moondream), áudio (Whisper) e PDFs.
+- **Ollama**: Roda no host (Ubuntu), fora do Docker, para máxima performance.
 
-O bot utiliza IA rodando totalmente na sua própria máquina. Abra o terminal e baixe os modelos necessários antes de rodar os servidores:
+---
+
+## 🛠️ Pré-requisitos
+
+### 1. Docker e Docker Compose
+```bash
+# Instalar Docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# Reinicie o terminal após esse comando
+
+# Docker Compose já vem incluído no Docker moderno (docker compose)
+```
+
+### 2. Ollama (roda no host, fora do Docker)
+```bash
+sudo apt update && sudo apt install -y curl zstd
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+### 3. NVIDIA Container Toolkit (apenas se tiver GPU)
+> **⚠️ Sem isso, o Docker NÃO consegue acessar sua RTX/GTX.**
+
+Verifique se já está instalado:
+```bash
+nvidia-container-cli --version
+```
+
+Se não estiver, instale:
+```bash
+# Configura o repositório
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+  && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+    sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+# Instala
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+
+# Configura o Docker para usar o runtime NVIDIA
+sudo nvidia-ctk runtime configure --runtime=docker
+
+# Reinicia o Docker para aplicar as mudanças (crucial para o erro "could not select device driver")
+sudo systemctl restart docker
+# OU, se estiver usando WSL e o de cima falhar:
+# sudo service docker restart
+```
+
+---
+
+## 🧠 Passo 1: Baixar os Modelos de IA (Ollama)
+
+O Ollama roda **no seu Ubuntu** (não dentro do Docker). Baixe os modelos antes de subir os containers:
 
 ```bash
-# Para conversar e fazer resumos:
+# ===== MODELOS DE TEXTO (escolha um) =====
+
+# OPÇÃO 1 — RTX 4060 / 8GB VRAM (Recomendado):
+ollama pull llama3.1:8b
+
+# OPÇÃO 2 — GPU 12GB+ VRAM (Mais pesado, mais inteligente):
+ollama pull gpt-oss:20b
+
+# OPÇÃO 3 — PC Fraco / Sem GPU:
 ollama pull llama3.2:3b
 
-# Para ler imagens:
+# ===== MODELOS DE VISÃO (escolha um) =====
+
+# OPÇÃO 1 — RTX 4060 (Lê textos em imagens, gráficos):
+ollama pull minicpm-v
+
+# OPÇÃO 2 — PC Fraco (Rápido, descrições básicas):
 ollama pull moondream
 ```
 
 ---
 
-## 🐍 Passo 2: Configurando o Backend (Python - "Cérebro")
+## ⚙️ Passo 2: Configurar o Perfil de Hardware
 
-O backend é responsável por receber os arquivos e textos e processá-los com IA.
+Edite o arquivo `.env` na raiz do projeto:
 
-1. Abra um terminal e navegue até a pasta Python:
-   ```bash
-   cd brain-python
-   ```
+```env
+# Opções: LOW (sem GPU), MED (RTX 4060), HIGH (GPU 12GB+)
+AI_PROFILE=MED
+```
 
-2. Crie um ambiente virtual (recomendado) e ative-o:
-   ```bash
-   python -m venv venv
-   # No Linux/Mac:
-   source venv/bin/activate
-   # No Windows:
-   venv\Scripts\activate
-   ```
+| Perfil | Texto | Visão | Whisper | Requisitos |
+|--------|-------|-------|---------|------------|
+| `LOW` | llama3.2:3b | moondream | base | Apenas CPU |
+| `MED` | llama3.1:8b | minicpm-v | medium | RTX 4060 (8GB VRAM) |
+| `HIGH` | gpt-oss:20b | minicpm-v | medium | GPU 12GB+ VRAM |
 
-3. Instale as dependências:
-   ```bash
-   pip install fastapi "uvicorn[standard]" ollama openai-whisper pypdf2 python-multipart
-   ```
-
-4. Inicie o servidor da API:
-   ```bash
-   python main.py
-   ```
-   > O servidor ficará rodando na porta `8000`. Deixe este terminal aberto!
+> **💡 Fallback automático:** Se a GPU não for detectada, o sistema força o perfil `LOW` automaticamente, independente do que estiver no `.env`.
 
 ---
 
-## 🚀 Passo 3: Configurando o Frontend (Node.js - "Ponte")
+## 🚀 Passo 3: Rodar!
 
-O frontend gerencia a conexão com o WhatsApp e repassa as mensagens para o backend.
+### Configurar o Ollama para aceitar conexões do Docker
+O Docker roda em uma rede interna. Para o container Python alcançar o Ollama no host:
 
-1. Abra **outro** terminal e navegue até a pasta Node:
-   ```bash
-   cd bridge-node
-   ```
+```bash
+# Rode ANTES do docker-compose (ou configure no systemd para ser permanente)
+export OLLAMA_HOST=0.0.0.0
+ollama serve
+```
 
-2. Instale as dependências do projeto:
-   ```bash
-   npm install
-   ```
+```bash
+# Para parar o ollama
+sudo systemctl stop ollama
+```
 
-3. Inicie o bot:
-   ```bash
-   node index.js
-   ```
+### Subir os containers
+```bash
+# Na raiz do projeto:
+docker-compose up --build
+```
 
-4. **Ler o QR Code:** Quando você rodar o comando acima, um QR Code enorme será gerado no terminal. Abra o WhatsApp no seu celular, vá em "Aparelhos Conectados" > "Conectar um Aparelho" e escaneie o código.
+Isso vai:
+1. Baixar e iniciar o **Redis**
+2. Construir e iniciar o **Brain Python** (com GPU)
+3. Construir e iniciar o **Bridge Node** (com Chromium)
+
+### Escaneie o QR Code
+Quando o Bridge Node estiver pronto, um QR Code aparecerá no terminal. Escaneie com WhatsApp > Aparelhos Conectados > Conectar um Aparelho.
 
 ---
 
-## 🎉 Tudo Pronto!
+## 🖥️ Rodando SEM GPU
 
-Se o bot se conectou com sucesso, você verá no terminal a mensagem dizendo que o cliente está pronto.
-Agora basta mandar uma mensagem de texto, de áudio, imagem ou PDF para o número conectado e ele irá responder processando pela máquina!
+Se a máquina não tiver placa NVIDIA:
+
+1. Mude `AI_PROFILE=LOW` no `.env`
+2. **Remova** o bloco `deploy.resources` do `docker-compose.yml`:
+   ```yaml
+   # Comente ou remova estas linhas do serviço brain-python:
+   # deploy:
+   #   resources:
+   #     reservations:
+   #       devices:
+   #         - driver: nvidia
+   #           count: 1
+   #           capabilities: [gpu]
+   ```
+3. Rode normalmente: `docker-compose up --build`
+
+> O bot vai funcionar, mas o Whisper usará CPU (~15-20s por áudio em vez de ~1-2s com GPU).
+
+---
+
+## ⚠️ Erros Comuns
+
+### 1. Erro de permissão (Permission Denied) no Build
+Se o Docker reclamar de permissão na pasta `.wwebjs_auth` ao buildar o `bridge-node`, rode:
+
+```bash
+sudo chown -R $USER:$USER ./bridge-node/.wwebjs_auth
+```
+Isso devolve a posse da pasta da sessão do WhatsApp (que o Docker criou como root) para o seu usuário.
+
+---
+
+## 📊 Monitoramento
+
+### Ver logs dos containers
+```bash
+# Todos os serviços
+docker-compose logs -f
+
+# Apenas um serviço
+docker-compose logs -f brain-python
+docker-compose logs -f bridge-node
+```
+
+### Health check do Brain
+```bash
+curl http://localhost:8000/health
+```
+
+### Monitorar filas no Redis
+```bash
+docker exec -it bot-redis redis-cli
+# Dentro do CLI:
+LLEN bull:whatsapp-ai:wait    # Mensagens aguardando
+LLEN bull:whatsapp-ai:active  # Mensagem sendo processada
+```
+
+---
+
+## 🎉 Pronto!
+
+Mande uma mensagem de **texto**, **áudio**, **imagem** ou **PDF** para o número conectado. O bot enfileira, processa com IA e responde automaticamente!

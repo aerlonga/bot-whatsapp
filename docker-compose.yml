@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:alpine
+    container_name: bot-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  brain-python:
+    build: ./brain-python
+    container_name: brain-python
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./brain-python:/app
+    environment:
+      - AI_PROFILE=${AI_PROFILE}
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  bridge-node:
+    build: ./bridge-node
+    container_name: bridge-node
+    depends_on:
+      - redis
+      - brain-python
+    volumes:
+      - ./bridge-node:/app
+      - /app/node_modules
+    env_file: .env
+    cap_add:
+      - SYS_ADMIN
+    restart: unless-stopped
