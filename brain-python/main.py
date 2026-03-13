@@ -34,6 +34,7 @@ SYSTEM_PROMPT = (
     "Você é o assistente pessoal do Aerlon. "
     "REGRA DE OURO: Você possui ferramentas financeiras, mas elas SÓ podem ser usadas se o usuário usar os comandos '@gasto' ou '@orçamento'. "
     "Não mencione ferramentas financeiras, gastos ou orçamentos em mensagens de saudação ou conversas gerais, a menos que o usuário utilize os comandos. "
+    "Se o usuário perguntar sobre gastos ou finanças sem usar os comandos, oriente-o a usar '@gasto' para registrar despesas ou '@orçamento' para realizar consultas. "
     "Se o usuário pedir para guardar uma informação, apenas confirme que guardou. "
     "Responda sempre no mesmo idioma que o usuário. Seja direto e profissional."
 )
@@ -103,6 +104,7 @@ async def chat_endpoint(data: dict):
         if ai_message.get('tool_calls'):
             messages.append(ai_message)  # Add assistant's tool call message
             
+            tool_replies = []
             for tool_call in ai_message.get('tool_calls', []):
                 tool_name = tool_call['function']['name']
                 tool_args = tool_call['function']['arguments']
@@ -110,29 +112,24 @@ async def chat_endpoint(data: dict):
                 # Executa a tool
                 tool_result = await run_tool(tool_name, tool_args, user_id=user_id)
                 
+                if isinstance(tool_result, dict) and tool_result.get('result'):
+                    tool_replies.append(tool_result['result'])
+                
                 messages.append({
                     'role': 'tool',
                     'content': json.dumps(tool_result),
                 })
                 
-            # Segunda chamada para Ollama formatar a resposta
-            response = await ollama_service.chat(messages=messages)
-            ai_message = response.get('message', {})
-            
-        final_reply = ai_message.get('content', '')
-        
-        # Se o modelo falhou em dar um conteúdo mas a tool retornou algo amigável para confirmação, usa o result da tool
-        if not final_reply and ai_message.get('tool_calls'):
-             # Tenta achar o 'result' na última mensagem de tool
-             for msg in reversed(messages):
-                 if msg.get('role') == 'tool':
-                     try:
-                         res_data = json.loads(msg['content'])
-                         if res_data.get('success') and res_data.get('result'):
-                             final_reply = res_data['result']
-                             break
-                     except:
-                         continue
+            # Usa as mensagens formatadas das próprias tools, se disponíveis
+            if tool_replies:
+                final_reply = "\n".join(tool_replies)
+            else:
+                # Segunda chamada para Ollama formatar a resposta apenas como fallback
+                response = await ollama_service.chat(messages=messages)
+                ai_message = response.get('message', {})
+                final_reply = ai_message.get('content', '')
+        else:
+            final_reply = ai_message.get('content', '')
         
         # Save memory
         user_msg = user_msg_content
