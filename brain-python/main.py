@@ -1,6 +1,7 @@
-import os
 import io
+import json
 import PyPDF2
+import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Form
@@ -30,12 +31,11 @@ app = FastAPI(lifespan=lifespan)
 # SYSTEM PROMPT
 # ============================================
 SYSTEM_PROMPT = (
-    "Você é um assistente inteligente e versátil. "
-    "REGRA PRINCIPAL: Identifique o idioma do usuário e responda no MESMO idioma. "
-    "Se o usuário falar em Português, responda em Português. Se falar em Inglês, responda em Inglês. "
-    "Se o usuário pedir explicitamente para mudar de idioma, obedeça. "
-    "Nunca misture idiomas na mesma frase (nada de portunhol). "
-    "Seja direto, prestativo e mantenha o tom profissional."
+    "Você é o assistente pessoal do Aerlon. "
+    "REGRA DE OURO: Você possui ferramentas financeiras, mas elas SÓ podem ser usadas se o usuário usar os comandos '@gasto' ou '@orçamento'. "
+    "Não mencione ferramentas financeiras, gastos ou orçamentos em mensagens de saudação ou conversas gerais, a menos que o usuário utilize os comandos. "
+    "Se o usuário pedir para guardar uma informação, apenas confirme que guardou. "
+    "Responda sempre no mesmo idioma que o usuário. Seja direto e profissional."
 )
 
 # ============================================
@@ -50,15 +50,52 @@ async def chat_endpoint(data: dict):
         from app.services import context_service
         
         user_id = data.get("user_id", "default_user")
+        pushname = data.get("pushname")
+        
+        # Atualiza nome do usuário se fornecido
+        if pushname:
+            await context_service.update_user_name(str(user_id), pushname)
         
         # Build context
         context_messages = await context_service.build_context_for_llama(user_id)
         
-        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-        messages.extend(context_messages)
-        messages.extend(data.get("messages", []))
+        # PROMPT DE SISTEMA MELHORADO
+        improved_system_prompt = (
+            f"{SYSTEM_PROMPT}\n"
+            "INSTRUÇÕES DE FERRAMENTAS:\n"
+            "1. Quando o usuário usar '@gasto', extraia Local, Valor, Categoria e Data. Se a data não for clara, use 'hoje'.\n"
+            "2. Após chamar 'registrar_gasto', você receberá uma mensagem de confirmação. REPASSE essa mensagem exatamente para o usuário.\n"
+            "3. Se o usuário confirmar (Sim) ou cancelar (Não), use a ferramenta 'confirmar_acao'.\n"
+            "4. NUNCA responda com JSON bruto. Sempre fale de forma natural e amigável."
+        )
         
-        response = await ollama_service.chat(messages=messages, tools=TOOLS_DEFINITION)
+        messages = [{'role': 'system', 'content': improved_system_prompt}]
+        messages.extend(context_messages)
+        
+        user_msg_list = data.get("messages", [])
+        messages.extend(user_msg_list)
+        
+        # Filtra as ferramentas baseada no gatilho ou estado pendente
+        user_msg_content = user_msg_list[-1].get("content", "") if user_msg_list else ""
+        trimmed_msg = user_msg_content.strip().lower()
+        
+        # Sempre verifica se há algo pendente para dar a ferramenta de confirmação
+        pending_action = await context_service.get_pending_action(user_id)
+        
+        available_tools = []
+        if trimmed_msg.startswith("@gasto"):
+            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] == 'registrar_gasto'])
+        elif trimmed_msg.startswith("@orçamento") or trimmed_msg.startswith("@orcamento"):
+            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] == 'consultar_orcamentos'])
+        
+        # Se houver pendência ou o usuário parecer estar confirmando/negando, libera confirmar_acao
+        if pending_action or any(x in trimmed_msg for x in ["sim", "não", "nao", "confirmo", "cancela"]):
+            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] == 'confirmar_acao'])
+            
+        if not available_tools:
+            available_tools = None
+
+        response = await ollama_service.chat(messages=messages, tools=available_tools)
         
         ai_message = response.get('message', {})
         
@@ -71,11 +108,11 @@ async def chat_endpoint(data: dict):
                 tool_args = tool_call['function']['arguments']
                 
                 # Executa a tool
-                tool_result = await run_tool(tool_name, tool_args)
+                tool_result = await run_tool(tool_name, tool_args, user_id=user_id)
                 
                 messages.append({
                     'role': 'tool',
-                    'content': str(tool_result),
+                    'content': json.dumps(tool_result),
                 })
                 
             # Segunda chamada para Ollama formatar a resposta
@@ -84,15 +121,27 @@ async def chat_endpoint(data: dict):
             
         final_reply = ai_message.get('content', '')
         
+        # Se o modelo falhou em dar um conteúdo mas a tool retornou algo amigável para confirmação, usa o result da tool
+        if not final_reply and ai_message.get('tool_calls'):
+             # Tenta achar o 'result' na última mensagem de tool
+             for msg in reversed(messages):
+                 if msg.get('role') == 'tool':
+                     try:
+                         res_data = json.loads(msg['content'])
+                         if res_data.get('success') and res_data.get('result'):
+                             final_reply = res_data['result']
+                             break
+                     except:
+                         continue
+        
         # Save memory
-        user_msg = data.get("messages", [])[-1].get("content", "")
+        user_msg = user_msg_content
         if user_msg and final_reply:
             resumo = f"User: {user_msg}\nBot: {final_reply}"
             await context_service.save_context(str(user_id), resumo)
             
         return {"reply": final_reply}
     except Exception as e:
-        import traceback
         traceback.print_exc()
         return {"reply": f"ERRO DE TEXTO: {str(e)}"}
 
@@ -128,7 +177,7 @@ async def read_pdf_endpoint(file: UploadFile = File(...)):
         for page in pdf_reader.pages:
             extracted = page.extract_text()
             if extracted:
-                text += extracted
+                text = text + str(extracted)
         
         ai_res = await ollama_service.chat(messages=[
             {'role': 'system', 'content': f"{SYSTEM_PROMPT} Resuma o PDF enviado pelo usuário."},

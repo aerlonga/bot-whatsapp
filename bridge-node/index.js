@@ -11,7 +11,8 @@ if (!TELEGRAM_TOKEN) {
     process.exit(1);
 }
 
-const PYTHON_API = process.env.PYTHON_API_URL || 'http://localhost:8000';
+// const PYTHON_API = process.env.PYTHON_API_URL || 'http://localhost:8000';
+const PYTHON_API = process.env.PYTHON_API_URL || 'http://172.19.0.1:11434';
 const API_TIMEOUT = 300000;
 
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
@@ -214,7 +215,8 @@ const worker = new Worker('bot-ai', async (job) => {
             } else {
                 const res = await api.post('/chat', {
                     messages: [{ role: 'user', content: body }],
-                    user_id: chatId
+                    user_id: chatId,
+                    pushname: pushname
                 });
                 aiReply = res.data.reply;
             }
@@ -222,11 +224,22 @@ const worker = new Worker('bot-ai', async (job) => {
             clearInterval(typingInterval);
         }
 
+        if (body && body.trim().toLowerCase() === '!help') {
+            aiReply = `*Lista de Comandos:* ✨\n\n` +
+                `📌 *@gasto*
+                    Informe o [local], [valor],  [categoria] e [data] do gasto\n` +
+                `_Ex: @gasto Mercado 50 Alimentação no dia 01/01/2024_\n\n` +
+                `📊 *@orçamento* [categoria]\n` +
+                `_Ex: @orçamento Lazer ou apenas @orçamento_\n\n` +
+                `💡 *Dica:* Utilize os comandos no início da mensagem!`;
+        }
+
         if (!aiReply) throw new Error('Sem resposta da IA (Backend retornou vazio)');
 
         let finalMessage = aiReply;
         if (!introducedUsers.has(chatId)) {
-            finalMessage = `*Olá, ${pushname}!*\n\nSou o assistente inteligente do Aerlon. Enquanto ele não responde, precisa de algo?\n\n${aiReply}`;
+            // finalMessage = `*Olá, ${pushname}!* 👋\n\nSou o assistente inteligente do Aerlon. Enquanto ele não responde, posso te ajudar com algo? (Digite *!help* para ver meus comandos)\n\n${aiReply}`;
+            finalMessage = `*Olá, ${pushname}!* 👋\n\nSou a assistente inteligente do Aerlon. Enquanto ele não responde, posso te ajudar com algo? (Digite *!help* para ver meus comandos)`;
             introducedUsers.add(chatId);
         }
 

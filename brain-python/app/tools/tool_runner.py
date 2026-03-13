@@ -4,9 +4,11 @@ from app.tools.orcamento_tool import consultar_orcamentos
 from app.tools.calendar_tool import marcar_reuniao
 from app.tools.email_tool import enviar_email
 
+from app.services.context_service import get_pending_action, clear_pending_action
+
 logger = logging.getLogger(__name__)
 
-async def run_tool(name: str, args: dict) -> dict:
+async def run_tool(name: str, args: dict, user_id: str | None = None) -> dict:
     """
     Roteador de ferramentas. Recebe o nome da ferramenta enviada pelo Ollama,
     chama a função correta do python com os argumentos, e retorna resultado formatado.
@@ -15,7 +17,25 @@ async def run_tool(name: str, args: dict) -> dict:
     
     try:
         if name == "registrar_gasto":
-            return await registrar_gasto(**args)
+            return await registrar_gasto(user_id=user_id, **args)
+            
+        elif name == "confirmar_acao":
+            confirmado = args.get("confirmado", False)
+            if not confirmado:
+                await clear_pending_action(user_id)
+                return {"success": True, "result": "Ação cancelada pelo usuário."}
+            
+            pending = await get_pending_action(user_id)
+            if not pending:
+                return {"success": False, "result": "Não encontrei nenhuma ação pendente para confirmar."}
+            
+            if pending["tool"] == "registrar_gasto":
+                # Executa o registro de fato agora que foi confirmado
+                res = await registrar_gasto(user_id=user_id, confirmed=True, **pending["args"])
+                await clear_pending_action(user_id)
+                return res
+            
+            return {"success": False, "result": "A ferramenta pendente não é suportada para confirmação direta."}
             
         elif name == "consultar_orcamentos":
             return await consultar_orcamentos(**args)

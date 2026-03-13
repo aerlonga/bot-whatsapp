@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PROFILE = os.getenv("AI_PROFILE", "MED").upper()
+PROFILE = os.getenv("AI_PROFILE", "LOW").upper()
 
 # Verifica se a GPU está disponível
 HAS_GPU = torch.cuda.is_available()

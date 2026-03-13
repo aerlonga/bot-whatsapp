@@ -72,3 +72,15 @@ CREATE TABLE IF NOT EXISTS orcamentos (
     ativo       BOOLEAN NOT NULL DEFAULT TRUE,
     criado_em   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ------------------------------------------------------------
+-- Tabela: pendencias
+-- Registros de ações pendentes que precisam de confirmação
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pendencias (
+    id          SERIAL PRIMARY KEY,
+    contato_id  INTEGER NOT NULL REFERENCES contatos(id) ON DELETE CASCADE,
+    ferramenta  TEXT NOT NULL,
+    argumentos  JSONB NOT NULL,
+    criado_em   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

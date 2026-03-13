@@ -3,26 +3,26 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "registrar_gasto",
-            "description": "Registra uma despesa ou gasto no sistema financeiro. Use esta ferramenta quando o usuário mencionar que gastou, comprou ou pagou algo.",
+            "description": "Registra um gasto financeiro (local, valor, categoria, data).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "estabelecimento": {
                         "type": "string",
-                        "description": "Nome do local, loja ou entidade onde o gasto foi feito (ex: Mercado, Uber, Farmácia). Se não mencionado, crie um nome genérico aplicável."
+                        "description": "Local/loja."
                     },
                     "valor": {
                         "type": "number",
-                        "description": "Valor monetário do gasto (ex: 50.00). Use sempre formato numérico (float)."
+                        "description": "Valor numérico."
                     },
                     "categoria": {
                         "type": "string",
-                        "description": "Categoria do gasto obrigatória de acodo com o prompt (Alimentação, Transporte, Saúde, Moradia, Lazer, Educação, Outros).",
+                        "description": "Alimentação, Transporte, Lazer, etc.",
                         "enum": ["Alimentação", "Transporte", "Saúde", "Moradia", "Lazer", "Educação", "Outros"]
                     },
                     "data": {
                         "type": "string",
-                        "description": "Data aproximada ou exata mencionada, no formato YYYY-MM-DD. O padrão é a data de hoje, calcule se ele falar 'ontem' em relação a hoje."
+                        "description": "Data mencionada (ex: 'hoje', 'ontem', '13/03/2026' ou '2026-03-13')."
                     }
                 },
                 "required": ["estabelecimento", "valor", "categoria"]
@@ -32,8 +32,25 @@ TOOLS_DEFINITION = [
     {
         "type": "function",
         "function": {
+            "name": "confirmar_acao",
+            "description": "Confirma ou cancela uma ação pendente (como o registro de um gasto) quando o usuário responde 'Sim' ou 'Não' após ser solicitado.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confirmado": {
+                        "type": "boolean",
+                        "description": "True se o usuário confirmou (Sim), False se cancelou (Não)."
+                    }
+                },
+                "required": ["confirmado"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "consultar_orcamentos",
-            "description": "Verifica os orçamentos, saldos ou gastos acumulados em um serviço para saber se o usuário ainda pode gastar com ele.",
+            "description": "REGRA EXTREMAMENTE IMPORTANTE: Você SÓ DEVE usar esta ferramenta SE e SOMENTE SE o usuário digitar EXATAMENTE a palavra '@orçamento' no início da mensagem. Verifica os orçamentos, saldos ou gastos acumulados em um serviço para saber se o usuário ainda pode gastar com ele.",
             "parameters": {
                 "type": "object",
                 "properties": {
