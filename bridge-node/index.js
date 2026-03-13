@@ -20,10 +20,10 @@ const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379', 10);
 const connection = new IORedis({
     host: REDIS_HOST,
     port: REDIS_PORT,
-    maxRetriesPerRequest: null 
+    maxRetriesPerRequest: null
 });
 
-const chatQueue = new Queue('whatsapp-ai', { connection });
+const chatQueue = new Queue('bot-ai', { connection });
 
 const introducedUsers = new Set();
 const ERROR_MSG = '*Ops!* Tive um probleminha para processar isso agora. Pode tentar mandar de novo em alguns segundos?';
@@ -175,7 +175,7 @@ bot.on(message('document'), async (ctx) => {
     }
 });
 
-const worker = new Worker('whatsapp-ai', async (job) => {
+const worker = new Worker('bot-ai', async (job) => {
     const { messageId, chatId, body, type, hasMedia, mediaData, mimetype, pushname } = job.data;
 
     console.log(`Processando job ${job.id} de ${pushname} (${chatId})...`);
@@ -189,7 +189,7 @@ const worker = new Worker('whatsapp-ai', async (job) => {
         const action = type === 'audio' ? 'record_voice' : (type === 'image' ? 'upload_photo' : 'typing');
         await bot.telegram.sendChatAction(telegramChatId, action);
         const typingInterval = setInterval(() => {
-            bot.telegram.sendChatAction(telegramChatId, action).catch(() => {});
+            bot.telegram.sendChatAction(telegramChatId, action).catch(() => { });
         }, 5000);
 
         try {
@@ -213,7 +213,8 @@ const worker = new Worker('whatsapp-ai', async (job) => {
                 }
             } else {
                 const res = await api.post('/chat', {
-                    messages: [{ role: 'user', content: body }]
+                    messages: [{ role: 'user', content: body }],
+                    user_id: chatId
                 });
                 aiReply = res.data.reply;
             }
@@ -259,7 +260,7 @@ const worker = new Worker('whatsapp-ai', async (job) => {
         } else {
             await sendSafe(telegramChatId, finalMessage);
         }
-        
+
         console.log(`Resposta enviada para ${pushname}.`);
 
     } catch (err) {

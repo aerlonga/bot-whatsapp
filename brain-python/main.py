@@ -1,68 +1,30 @@
-from fastapi import FastAPI, UploadFile, File, Form
-import ollama
-import whisper
 import os
-import PyPDF2
 import io
-import torch
+import PyPDF2
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+from fastapi import FastAPI, UploadFile, File, Form
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ============================================
-# DETECÇÃO DE PERFIL DE HARDWARE
-# ============================================
-# Lido da variável de ambiente AI_PROFILE (definida no .env / docker-compose)
-PROFILE = os.getenv("AI_PROFILE", "MED").upper()
+from app.config import PROFILE, DEVICE, MODELO_TEXTO, MODELO_VISAO, WHISPER_MODEL
+from app.services import ollama_service, whisper_service
+from app.tasks.cleanup_memory import cleanup_expired_memories
 
-# Verifica se a GPU está disponível
-HAS_GPU = torch.cuda.is_available()
-device = "cuda" if HAS_GPU else "cpu"
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Executa ao iniciar
+    scheduler = AsyncIOScheduler()
+    # Executa a limpeza a cada 6 horas
+    scheduler.add_job(cleanup_expired_memories, 'interval', hours=6)
+    scheduler.start()
+    print("Scheduler de limpeza de memória iniciado (a cada 6 horas).")
+    
+    yield
+    
+    # Executa ao desligar
+    scheduler.shutdown()
 
-# FALLBACK INTELIGENTE: Se não tem GPU, força perfil LOW
-# para evitar que a máquina trave tentando rodar modelos pesados na CPU
-if not HAS_GPU and PROFILE != "LOW":
-    print(f"GPU não detectada! Perfil '{PROFILE}' ignorado → forçando perfil LOW.")
-    PROFILE = "LOW"
-
-# Seleção de modelos baseada no perfil
-if PROFILE == "LOW":
-    MODELO_TEXTO = "llama3.2:3b"
-    MODELO_VISAO = "moondream"
-    WHISPER_MODEL = "base"
-elif PROFILE == "LOW2":
-    MODELO_TEXTO = "llama3.2:3b"
-    MODELO_VISAO = "minicpm-v"
-    WHISPER_MODEL = "medium"
-elif PROFILE == "HIGH":
-    MODELO_TEXTO = "gpt-oss:20b"
-    MODELO_VISAO = "minicpm-v"
-    WHISPER_MODEL = "medium"
-else:
-    MODELO_TEXTO = "llama3.1:8b"
-    MODELO_VISAO = "minicpm-v"
-    WHISPER_MODEL = "medium"
-
-print(f"Perfil: {PROFILE} | Device: {device.upper()}")
-print(f"Texto: {MODELO_TEXTO} | Visão: {MODELO_VISAO} | Whisper: {WHISPER_MODEL}")
-
-# ============================================
-# CONFIGURAÇÃO DO OLLAMA (dentro do Docker)
-# ============================================
-# Quando roda no Docker, o Ollama está no host (Ubuntu), não no container.
-# A variável OLLAMA_HOST é setada no docker-compose.yml via extra_hosts.
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", None)
-if OLLAMA_HOST:
-    # Configura o cliente Ollama para apontar para o host
-    ollama_client = ollama.Client(host=OLLAMA_HOST)
-    print(f"Ollama conectado via: {OLLAMA_HOST}")
-else:
-    # Rodando localmente (sem Docker), usa localhost padrão
-    ollama_client = ollama.Client()
-    print("Ollama conectado via: localhost (padrão)")
-
-# Carregamento do Whisper otimizado para o perfil
-model_whisper = whisper.load_model(WHISPER_MODEL, device=device)
-print(f"Whisper '{WHISPER_MODEL}' carregado no {device.upper()}!")
+app = FastAPI(lifespan=lifespan)
 
 # ============================================
 # SYSTEM PROMPT
@@ -81,55 +43,84 @@ SYSTEM_PROMPT = (
 # ============================================
 
 @app.post("/chat")
-async def chat(data: dict):
+async def chat_endpoint(data: dict):
     try:
+        from app.prompts.tools_definition import TOOLS_DEFINITION
+        from app.tools.tool_runner import run_tool
+        from app.services import context_service
+        
+        user_id = data.get("user_id", "default_user")
+        
+        # Build context
+        context_messages = await context_service.build_context_for_llama(user_id)
+        
         messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+        messages.extend(context_messages)
         messages.extend(data.get("messages", []))
         
-        response = ollama_client.chat(model=MODELO_TEXTO, messages=messages)
-        return {"reply": response['message']['content']}
+        response = await ollama_service.chat(messages=messages, tools=TOOLS_DEFINITION)
+        
+        ai_message = response.get('message', {})
+        
+        # Se Llama chamou alguma tool
+        if ai_message.get('tool_calls'):
+            messages.append(ai_message)  # Add assistant's tool call message
+            
+            for tool_call in ai_message.get('tool_calls', []):
+                tool_name = tool_call['function']['name']
+                tool_args = tool_call['function']['arguments']
+                
+                # Executa a tool
+                tool_result = await run_tool(tool_name, tool_args)
+                
+                messages.append({
+                    'role': 'tool',
+                    'content': str(tool_result),
+                })
+                
+            # Segunda chamada para Ollama formatar a resposta
+            response = await ollama_service.chat(messages=messages)
+            ai_message = response.get('message', {})
+            
+        final_reply = ai_message.get('content', '')
+        
+        # Save memory
+        user_msg = data.get("messages", [])[-1].get("content", "")
+        if user_msg and final_reply:
+            resumo = f"User: {user_msg}\nBot: {final_reply}"
+            await context_service.save_context(str(user_id), resumo)
+            
+        return {"reply": final_reply}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"reply": f"ERRO DE TEXTO: {str(e)}"}
 
 @app.post("/vision")
-async def vision(prompt: str = Form("Descreva esta imagem"), file: UploadFile = File(...)):
+async def vision_endpoint(prompt: str = Form("Descreva esta imagem"), file: UploadFile = File(...)):
     try:
         img_bytes = await file.read()
-        response = ollama_client.chat(model=MODELO_VISAO, messages=[
-            {'role': 'system', 'content': SYSTEM_PROMPT},
-            {'role': 'user', 'content': prompt, 'images': [img_bytes]}
-        ])
-        return {"reply": response['message']['content']}
+        response = await ollama_service.vision(prompt, img_bytes)
+        return {"reply": response.get('message', {}).get('content', '')}
     except Exception as e:
         return {"reply": f"ERRO DE IMAGEM: {str(e)}"}
 
 @app.post("/transcribe")
-async def transcribe(file: UploadFile = File(...)):
+async def transcribe_endpoint(file: UploadFile = File(...)):
     try:
         content = await file.read()
-        temp_path = "/tmp/temp_audio.ogg"
-        with open(temp_path, "wb") as f:
-            f.write(content)
-            
-        # fp16 só funciona com GPU (CUDA). Na CPU usamos fp32.
-        use_fp16 = device == "cuda"
-        result = model_whisper.transcribe(temp_path, fp16=use_fp16)
+        text = await whisper_service.transcribe(content)
         
-        # Remove o arquivo temporário
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        
-        # IA processa o texto transcrito seguindo a regra do idioma
-        ai_res = ollama_client.chat(model=MODELO_TEXTO, messages=[
+        ai_res = await ollama_service.chat(messages=[
             {'role': 'system', 'content': SYSTEM_PROMPT},
-            {'role': 'user', 'content': f"O usuário enviou um áudio com este conteúdo: {result['text']}. Responda adequadamente."}
+            {'role': 'user', 'content': f"O usuário enviou um áudio com este conteúdo: {text}. Responda adequadamente."}
         ])
-        return {"reply": ai_res['message']['content']}
+        return {"reply": ai_res.get('message', {}).get('content', '')}
     except Exception as e:
         return {"reply": f"ERRO DE ÁUDIO: {str(e)}"}
 
 @app.post("/pdf")
-async def read_pdf(file: UploadFile = File(...)):
+async def read_pdf_endpoint(file: UploadFile = File(...)):
     try:
         content = await file.read()
         pdf_reader = PyPDF2.PdfReader(io.BytesIO(content))
@@ -139,11 +130,11 @@ async def read_pdf(file: UploadFile = File(...)):
             if extracted:
                 text += extracted
         
-        ai_res = ollama_client.chat(model=MODELO_TEXTO, messages=[
+        ai_res = await ollama_service.chat(messages=[
             {'role': 'system', 'content': f"{SYSTEM_PROMPT} Resuma o PDF enviado pelo usuário."},
             {'role': 'user', 'content': text[:8000]}
         ])
-        return {"reply": ai_res['message']['content']}
+        return {"reply": ai_res.get('message', {}).get('content', '')}
     except Exception as e:
         return {"reply": f"ERRO DE PDF: {str(e)}"}
 
@@ -152,10 +143,12 @@ async def read_pdf(file: UploadFile = File(...)):
 # ============================================
 @app.get("/health")
 async def health():
+    ollama_ok, ollama_msg = await ollama_service.check_connection()
     return {
-        "status": "ok",
+        "status": "ok" if ollama_ok else "degraded",
+        "ollama_status": ollama_msg,
         "profile": PROFILE,
-        "device": device,
+        "device": DEVICE,
         "modelo_texto": MODELO_TEXTO,
         "modelo_visao": MODELO_VISAO,
         "whisper_model": WHISPER_MODEL

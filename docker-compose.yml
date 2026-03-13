@@ -1,9 +1,5 @@
 version: '3.8'
 
-networks:
-  bot-network:
-    driver: bridge
-
 services:
   redis:
     image: redis:alpine
@@ -72,5 +68,25 @@ services:
     networks:
       - bot-network
 
+  # spring-financeiro:
+  #   image: openjdk:17-jdk-slim
+  #   container_name: spring-financeiro
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+  #     - SPRING_DATASOURCE_USERNAME=${POSTGRES_USER}
+  #     - SPRING_DATASOURCE_PASSWORD=${POSTGRES_PASSWORD}
+  #     - SPRING_API_KEY=${SPRING_API_KEY}
+  #   depends_on:
+  #     - postgres
+  #   restart: unless-stopped
+  #   networks:
+  #     - bot-network
+
 volumes:
   postgres_data:
+
+networks:
+  bot-network:
+    driver: bridge

@@ -64,11 +64,11 @@ Tarefas:
    npm install bullmq ioredis
 2. Crie o arquivo bridge-node/src/queue.js com:
    - Conexão Redis usando REDIS_HOST e REDIS_PORT do .env
-   - Exportar uma instância de Queue chamada "whatsapp-ai"
+   - Exportar uma instância de Queue chamada "bot-ai"
    - Exportar uma instância de Worker para processar respostas
    - Configuração de retry: 3 tentativas, backoff exponencial 2s
 3. Crie o arquivo bridge-node/src/queues/responseWorker.js que:
-   - Escuta a fila "whatsapp-ai-response"
+   - Escuta a fila "bot-ai-response"
    - Recebe { chat_id, text } e envia a resposta via Telegram Bot API
 4. Adicione as variáveis no .env:
    REDIS_HOST=redis, REDIS_PORT=6379
@@ -251,7 +251,7 @@ Tarefas:
    - A cada 6 horas, busca memórias com expira_em < NOW()
    - Para cada contato afetado, guarda o telegram_user_id
    - Deleta as memórias expiradas
-   - Coloca na fila Redis (fila "whatsapp-ai-response") uma mensagem para
+   - Coloca na fila Redis (fila "bot-ai-response") uma mensagem para
      cada contato afetado: "Oi! Para manter a precisão das minhas respostas,
      arquivei nossas conversas de mais de 30 dias. Pode continuar normalmente!"
 3. Inicie o scheduler junto com o FastAPI no brain-python/app/main.py:
@@ -267,17 +267,17 @@ Tarefas:
 
 ### 3.1 — Configurar o bot Telegram (node-telegram-bot-api)
 
-Substitui o whatsapp-web.js. Recebe mensagens do Telegram e joga na fila BullMQ.
+Substitui o bot-web.js. Recebe mensagens do Telegram e joga na fila BullMQ.
 
 ```
-Configure o bridge-node para usar o Telegram Bot API no lugar do WhatsApp.
+Configure o bridge-node para usar o Telegram Bot API no lugar do bot.
 
-Contexto: o projeto estava usando whatsapp-web.js.
+Contexto: o projeto estava usando bot-web.js.
 Motivo da migração: Telegram tem API oficial, sem risco de banimento.
 
 Tarefas:
 1. No bridge-node, substitua/instale as dependências:
-   npm uninstall whatsapp-web.js (se instalado)
+   npm uninstall bot-web.js (se instalado)
    npm install node-telegram-bot-api bullmq ioredis
 2. Crie bridge-node/src/telegram/bot.js:
    - Inicializa TelegramBot com TELEGRAM_TOKEN do .env no modo polling
@@ -286,7 +286,7 @@ Tarefas:
      b) Identifica o tipo: texto, áudio (voice/audio), foto (photo), documento
      c) Para áudio: chama bot.getFileLink() e faz download para Buffer
      d) Para foto: pega a maior resolução (último item do array photo[])
-     e) Monta payload e enfileira na fila "whatsapp-ai" do BullMQ
+     e) Monta payload e enfileira na fila "bot-ai" do BullMQ
      f) Log de cada mensagem recebida com tipo e user_id
 3. Estrutura do payload na fila:
    { message_id, chat_id, user_id, user_name, type,
@@ -380,21 +380,21 @@ O brain-python consome a fila do Redis, detecta o tipo de mensagem e roteia para
 ```
 Crie o worker principal do brain-python que consome mensagens do BullMQ.
 
-Contexto: o bridge-node enfileira payloads na fila "whatsapp-ai" do Redis.
+Contexto: o bridge-node enfileira payloads na fila "bot-ai" do Redis.
 O brain-python precisa consumir esses jobs e processá-los.
 
 Tarefas:
 1. Instale no brain-python: pip install aioredis
    No Python, a forma mais simples de consumir a fila BullMQ é via:
-   BLPOP bull:whatsapp-ai:wait 0  (bloqueante, pega o próximo job)
+   BLPOP bull:bot-ai:wait 0  (bloqueante, pega o próximo job)
 2. Crie brain-python/app/workers/message_worker.py:
-   - Loop infinito async com aioredis BLPOP na fila "bull:whatsapp-ai:wait"
+   - Loop infinito async com aioredis BLPOP na fila "bull:bot-ai:wait"
    - Deserializa o JSON do job
    - Roteia por tipo:
      "text"  → chama process_text(payload)
      "audio" → chama process_audio(payload)
      "image" → chama process_image(payload)
-   - Após processar, enfileira resposta em "bull:whatsapp-ai-response:wait"
+   - Após processar, enfileira resposta em "bull:bot-ai-response:wait"
      com { chat_id, text: resposta_final }
    - Loga erros sem travar o loop (try/except com log)
 3. Crie brain-python/app/processors/text_processor.py:
@@ -596,7 +596,7 @@ Tarefas:
    a) Sobe todos os containers: docker-compose up -d
    b) Aguarda health checks de cada serviço (curl com retry)
    c) Simula um payload de texto na fila Redis diretamente:
-      docker exec bot-redis redis-cli LPUSH bull:whatsapp-ai:wait \
+      docker exec bot-redis redis-cli LPUSH bull:bot-ai:wait \
       '{"message_id":"test-001","chat_id":"123","type":"text",
       "text":"qual o meu gasto de alimentação este mês?","user_id":"123"}'
    d) Aguarda 10s e verifica se apareceu resposta na fila de resposta
@@ -629,8 +629,8 @@ Tarefas:
    TELEGRAM_TOKEN=your-token-from-botfather
    POSTGRES_USER=botuser
    POSTGRES_PASSWORD=change-me-strong-password
-   POSTGRES_DB=botwhatsapp
-   DATABASE_URL=postgresql://botuser:change-me@postgres:5432/botwhatsapp
+   POSTGRES_DB=botbot
+   DATABASE_URL=postgresql://botuser:change-me@postgres:5432/botbot
    REDIS_HOST=redis
    REDIS_PORT=6379
    AI_PROFILE=MED
@@ -722,7 +722,7 @@ Tarefas:
 4. Crie scripts/monitor.sh que exibe:
    - Status de cada container (docker ps)
    - Uso de VRAM da GPU (nvidia-smi --query-gpu=memory.used --format=csv)
-   - Tamanho da fila Redis (redis-cli LLEN bull:whatsapp-ai:wait)
+   - Tamanho da fila Redis (redis-cli LLEN bull:bot-ai:wait)
    - Últimas 20 linhas de log de cada serviço
    - Health check de cada serviço
 5. Adicione alias úteis ao README.md:

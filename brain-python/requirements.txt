@@ -4,3 +4,8 @@ ollama
 openai-whisper
 pypdf2
 python-multipart
+httpx
+sentence-transformers
+apscheduler
+asyncpg
+redis

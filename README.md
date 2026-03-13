@@ -1,12 +1,12 @@
-# bot-whatsapp
+# bot-bot
 
-Um bot de WhatsApp multimodal com arquitetura de **microserviços** usando Docker Compose, filas Redis (BullMQ) e IA local (Ollama + Whisper). Processa **texto, áudio, imagens e PDFs** com suporte automático a GPU.
+Um bot de bot multimodal com arquitetura de **microserviços** usando Docker Compose, filas Redis (BullMQ) e IA local (Ollama + Whisper). Processa **texto, áudio, imagens e PDFs** com suporte automático a GPU.
 
 ## 📐 Arquitetura
 
 ```
 ┌─────────────────┐    ┌──────────┐    ┌──────────────────┐    ┌──────────────┐
-│  WhatsApp Web   │───▶│  Bridge  │───▶│   Redis (Fila)   │───▶│    Brain     │
+│  bot Web   │───▶│  Bridge  │───▶│   Redis (Fila)   │───▶│    Brain     │
 │  (Usuário)      │◀───│  Node.js │◀───│   BullMQ Queue   │◀───│   Python     │
 └─────────────────┘    └──────────┘    └──────────────────┘    └──────┬───────┘
                                                                       │
@@ -16,7 +16,7 @@ Um bot de WhatsApp multimodal com arquitetura de **microserviços** usando Docke
                                                                └──────────────┘
 ```
 
-- **Bridge Node**: Recebe mensagens do WhatsApp e coloca na fila (Producer). Um Worker consome a fila e envia respostas.
+- **Bridge Node**: Recebe mensagens do bot e coloca na fila (Producer). Um Worker consome a fila e envia respostas.
 - **Redis**: Fila persistente. Se desligar o PC, as mensagens que estavam na fila serão processadas quando ligar de novo.
 - **Brain Python**: API FastAPI que processa texto (Ollama), imagens (MiniCPM-V/Moondream), áudio (Whisper) e PDFs.
 - **Ollama**: Roda no host (Ubuntu), fora do Docker, para máxima performance.
@@ -147,7 +147,7 @@ Isso vai:
 3. Construir e iniciar o **Bridge Node** (com Chromium)
 
 ### Escaneie o QR Code
-Quando o Bridge Node estiver pronto, um QR Code aparecerá no terminal. Escaneie com WhatsApp > Aparelhos Conectados > Conectar um Aparelho.
+Quando o Bridge Node estiver pronto, um QR Code aparecerá no terminal. Escaneie com bot > Aparelhos Conectados > Conectar um Aparelho.
 
 ---
 
@@ -181,7 +181,7 @@ Se o Docker reclamar de permissão na pasta `.wwebjs_auth` ao buildar o `bridge-
 ```bash
 sudo chown -R $USER:$USER ./bridge-node/.wwebjs_auth
 ```
-Isso devolve a posse da pasta da sessão do WhatsApp (que o Docker criou como root) para o seu usuário.
+Isso devolve a posse da pasta da sessão do bot (que o Docker criou como root) para o seu usuário.
 
 ---
 
@@ -206,8 +206,8 @@ curl http://localhost:8000/health
 ```bash
 docker exec -it bot-redis redis-cli
 # Dentro do CLI:
-LLEN bull:whatsapp-ai:wait    # Mensagens aguardando
-LLEN bull:whatsapp-ai:active  # Mensagem sendo processada
+LLEN bull:bot-ai:wait    # Mensagens aguardando
+LLEN bull:bot-ai:active  # Mensagem sendo processada
 ```
 
 ---
