@@ -9,3 +9,5 @@ sentence-transformers
 apscheduler
 asyncpg
 redis
+duckduckgo-search
+python-dotenv

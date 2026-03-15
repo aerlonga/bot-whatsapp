@@ -84,3 +84,17 @@ CREATE TABLE IF NOT EXISTS pendencias (
     argumentos  JSONB NOT NULL,
     criado_em   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ------------------------------------------------------------
+-- Tabela: economias
+-- Registros de economias extraídos das mensagens
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS economias (
+    id          SERIAL PRIMARY KEY,
+    contato_id  INTEGER REFERENCES contatos(id) ON DELETE CASCADE,
+    valor       NUMERIC(12, 2) NOT NULL,
+    descricao   TEXT,
+    data_registro DATE NOT NULL DEFAULT CURRENT_DATE,
+    criado_em   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+

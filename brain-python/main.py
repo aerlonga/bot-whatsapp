@@ -8,6 +8,7 @@ from fastapi import FastAPI, UploadFile, File, Form
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import PROFILE, DEVICE, MODELO_TEXTO, MODELO_VISAO, WHISPER_MODEL
+from app.prompts.system_prompt import SYSTEM_PROMPT
 from app.services import ollama_service, whisper_service
 from app.tasks.cleanup_memory import cleanup_expired_memories
 
@@ -27,26 +28,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ============================================
-# SYSTEM PROMPT (Escolha a versão de acordo com o modelo)
-# ============================================
-
-# --- VERSÃO MODELO 3B (Bot Focado / Baixo contexto) ---
-# SYSTEM_PROMPT = (
-#     "Você é a Inteligência Financeira do Aerlon. "
-#     "Sua função é EXCLUSIVA para gestão de gastos e orçamentos. "
-#     "Se o usuário falar sobre qualquer outro tema, informe educadamente que você é um bot especializado em finanças. "
-#     "Sempre apresente os comandos disponíveis: Digite !help para ajuda, "
-#     "@gasto para registrar despesas ou ver o histórico, e @orçamento para consultas de saldo e planejamento."
-# )
-
-# --- VERSÃO MODELO 8B (Assistente Versátil / Recomendado) ---
-SYSTEM_PROMPT = (
-    "Você é o assistente pessoal do Aerlon, especializado em finanças. "
-    "Você pode manter conversas curtas sobre outros temas, mas sua prioridade e trabalho principal é cuidar das finanças. "
-    "Sempre informe ao usuário que você foca em finanças e apresente os comandos: "
-    "Digite !help para ver todos os comandos, '@gasto' para registrar ou ver seu histórico e '@orçamento' para planejar seus saldos."
-)
+# SYSTEM_PROMPT importado de app.prompts.system_prompt
 
 # ============================================
 # ENDPOINTS
@@ -69,17 +51,15 @@ async def chat_endpoint(data: dict):
         # Build context
         context_messages = await context_service.build_context_for_llama(user_id)
         
-        # PROMPT DE SISTEMA MELHORADO PARA MODELOS PEQUENOS (LLAMA 3B)
+        # Prompt final com regras de comportamento para tools
         improved_system_prompt = (
             f"{SYSTEM_PROMPT}\n\n"
-            "REGRAS CRÍTICAS DE COMPORTAMENTO (SIGA SEMPRE):\n"
-            "1. NUNCA chame uma ferramenta (tool/função) automaticamente. Ferramentas SÓ podem ser ativadas quando o usuário digitar EXPLICITAMENTE os comandos '@gasto' ou '@orçamento' no início da mensagem.\n"
-            "2. Se o usuário perguntar sobre gastos de forma genérica (ex: 'você consegue ver meus gastos?', 'quanto gastei?'), responda apenas em texto explicando que ele pode usar '@gasto' para isso. NÃO execute nenhuma ferramenta.\n"
-            "3. Se você chamar 'registrar_gasto', repasse EXATAMENTE a pergunta de confirmação que a ferramenta retornar.\n"
-            "4. O usuário responderá 'Sim' ou 'Não' APENAS em resposta a uma confirmação de registro de gasto.\n"
-            "5. NÃO peça 'Sim' ou 'Não' em conversas sobre outros temas (saudação, dúvidas, ajuda).\n"
-            "6. Evite repetir 'Olá' no meio de uma conversa em andamento.\n"
-            "7. Responda de forma direta, curta e amigável."
+            "REGRAS DE FERRAMENTAS:\n"
+            "1. NUNCA chame ferramentas automaticamente. Ferramentas SÓ ativam com os comandos: '@gasto', '@orçamento', '@economia', '@pesquisa'.\n"
+            "2. Se o usuário perguntar sobre gastos sem usar '@gasto', responda em texto que ele pode usar o comando.\n"
+            "3. Repasse EXATAMENTE as confirmações retornadas pelas ferramentas.\n"
+            "4. 'Sim'/'Não' do usuário é APENAS para confirmar ações pendentes.\n"
+            "5. Responda de forma direta, curta e amigável."
         )
         
         messages = [{'role': 'system', 'content': improved_system_prompt}]
@@ -100,6 +80,10 @@ async def chat_endpoint(data: dict):
             available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] in ['registrar_gasto', 'consultar_gastos']])
         elif trimmed_msg.startswith("@orçamento") or trimmed_msg.startswith("@orcamento"):
             available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] in ['consultar_orcamentos', 'consultar_gastos']])
+        elif trimmed_msg.startswith("@economia"):
+            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] in ['registrar_economia', 'consultar_economias']])
+        elif trimmed_msg.startswith("@pesquisa"):
+            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] == 'pesquisar_web'])
         
         # Se houver pendência ou o usuário parecer estar confirmando/negando, libera confirmar_acao
         if pending_action or any(x in trimmed_msg for x in ["sim", "não", "nao", "confirmo", "cancela"]):
@@ -156,12 +140,12 @@ async def chat_endpoint(data: dict):
         elif _is_raw_tool_call(raw_content):
             # O modelo tentou chamar uma tool mas retornou como texto JSON (bug do Ollama)
             # Ignora o "fantasma" e pede ao modelo para responder em linguagem natural
-            logger.warning(f"[Chat] Detectado tool call como texto JSON bruto. Descartando e pedindo resposta natural.")
+            print(f"[Chat] Detectado tool call como texto JSON bruto. Descartando e pedindo resposta natural.")
             messages.append({'role': 'assistant', 'content': raw_content})
             messages.append({
                 'role': 'user',
                 'content': (
-                    "[INSTRUÇÃO DO SISTEMA]: Você tentou chamar uma ferramenta sem o gatilho correto ('@gasto' ou '@orçamento'). "
+                    "[INSTRUÇÃO DO SISTEMA]: Você tentou chamar uma ferramenta sem o gatilho correto ('@gasto', '@orçamento', '@economia' ou '@pesquisa'). "
                     "Por favor, responda a última mensagem do usuário SOMENTE em texto, sem chamar nenhuma ferramenta."
                 )
             })

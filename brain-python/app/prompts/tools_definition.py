@@ -33,7 +33,7 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "confirmar_acao",
-            "description": "Confirma ou cancela uma ação pendente (como o registro de um gasto) quando o usuário responde 'Sim' ou 'Não' após ser solicitado.",
+            "description": "Confirma ou cancela uma ação pendente (como o registro de um gasto ou economia) quando o usuário responde 'Sim' ou 'Não'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -50,13 +50,13 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "consultar_orcamentos",
-            "description": "REGRA EXTREMAMENTE IMPORTANTE: Você SÓ DEVE usar esta ferramenta SE e SOMENTE SE o usuário digitar EXATAMENTE a palavra '@orçamento' no início da mensagem. Verifica os orçamentos, saldos ou gastos acumulados em um serviço para saber se o usuário ainda pode gastar com ele.",
+            "description": "Consulta orçamentos, saldos ou gastos acumulados por categoria. Use SOMENTE quando o usuário digitar '@orçamento'.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "servico": {
                         "type": "string",
-                        "description": "Nome da categoria, serviço ou área que deseja consultar (ex: Alimentação, Transporte, Total). Se vazio, retorna uma visão geral."
+                        "description": "Nome da categoria (ex: Alimentação, Transporte, Total). Se vazio, retorna visão geral."
                     }
                 },
                 "required": []
@@ -66,64 +66,8 @@ TOOLS_DEFINITION = [
     {
         "type": "function",
         "function": {
-            "name": "marcar_reuniao",
-            "description": "Agenda uma reunião ou compromisso no calendário do usuário.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "titulo": {
-                        "type": "string",
-                        "description": "Título ou assunto da reunião."
-                    },
-                    "data": {
-                        "type": "string",
-                        "description": "Data do compromisso no formato YYYY-MM-DD."
-                    },
-                    "hora": {
-                        "type": "string",
-                        "description": "Hora do compromisso no formato HH:MM."
-                    },
-                    "duracao_minutos": {
-                        "type": "integer",
-                        "description": "Duração em minutos da reunião. Padrão 60.",
-                        "default": 60
-                    }
-                },
-                "required": ["titulo", "data", "hora"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "enviar_email",
-            "description": "Envia um email para um destinatário com um assunto e corpo de texto.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "destinatario": {
-                        "type": "string",
-                        "description": "Endereço de email de destino."
-                    },
-                    "assunto": {
-                        "type": "string",
-                        "description": "O tema central, título ou assunto principal do email."
-                    },
-                    "corpo": {
-                        "type": "string",
-                        "description": "O conteúdo completo que será enviado no corpo da mensagem de e-mail."
-                    }
-                },
-                "required": ["destinatario", "assunto", "corpo"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "consultar_gastos",
-            "description": "REGRA EXTREMAMENTE IMPORTANTE: Você SÓ DEVE usar esta ferramenta SE e SOMENTE SE o usuário digitar EXPLICITAMENTE '@gasto' no início de sua mensagem. Se o usuário perguntar sobre gastos de forma casual ou retórica (ex: 'você consegue ver meus gastos?', 'quanto gastei hoje?'), NUNCA use esta ferramenta — responda apenas em texto. Consulta o resumo de gastos do usuário em um determinado período (ex: hoje, este mês, últimos 7 dias) ou em uma data específica.",
-
+            "description": "Consulta o resumo de gastos do usuário em um período. Use SOMENTE quando o usuário digitar '@gasto'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -134,14 +78,70 @@ TOOLS_DEFINITION = [
                     },
                     "data": {
                         "type": "string",
-                        "description": "Data específica para a consulta (ex: '09/03/2026'). Use apenas se o período for 'especifico'."
+                        "description": "Data específica (ex: '09/03/2026'). Apenas se período for 'especifico'."
                     },
                     "categoria": {
                         "type": "string",
-                        "description": "Filtrar por uma categoria específica (opcional)."
+                        "description": "Filtrar por categoria (opcional)."
                     }
                 },
                 "required": ["periodo"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "registrar_economia",
+            "description": "Registra um valor que o usuário guardou/economizou. Use SOMENTE quando o usuário digitar '@economia'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "valor": {
+                        "type": "number",
+                        "description": "Valor guardado em reais."
+                    },
+                    "descricao": {
+                        "type": "string",
+                        "description": "Descrição ou motivo (ex: 'salário', 'freelance', 'mesada')."
+                    }
+                },
+                "required": ["valor"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "consultar_economias",
+            "description": "Consulta o total de economias/poupança do usuário. Use SOMENTE quando o usuário digitar '@economia'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "periodo": {
+                        "type": "string",
+                        "description": "Período da consulta.",
+                        "enum": ["hoje", "semana", "mes", "total"]
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pesquisar_web",
+            "description": "Pesquisa informações financeiras na internet. Use SOMENTE quando o usuário digitar '@pesquisa'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Termo de busca (ex: 'taxa selic atual', 'melhores investimentos 2026')."
+                    }
+                },
+                "required": ["query"]
             }
         }
     }
