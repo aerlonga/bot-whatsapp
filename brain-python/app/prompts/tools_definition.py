@@ -3,7 +3,7 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "registrar_gasto",
-            "description": "Registra um gasto financeiro (local, valor, categoria, data).",
+            "description": "Registra um gastos financeiro (local, valor, categoria, data).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -33,7 +33,7 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "confirmar_acao",
-            "description": "Confirma ou cancela uma ação pendente (como o registro de um gasto ou economia) quando o usuário responde 'Sim' ou 'Não'.",
+            "description": "Confirma ou cancela uma ação pendente (como o registro de um gastos ou economia) quando o usuário responde 'Sim' ou 'Não'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -50,7 +50,7 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "consultar_orcamentos",
-            "description": "Consulta orçamentos, saldos ou gastos acumulados por categoria. Use SOMENTE quando o usuário digitar '@orçamento'.",
+            "description": "Consulta orçamentos, saldos ou gastos acumulados por categoria.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -67,7 +67,7 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "consultar_gastos",
-            "description": "Consulta o resumo de gastos do usuário em um período. Use SOMENTE quando o usuário digitar '@gasto'.",
+            "description": "Consulta o resumo de gastos do usuário em um período determinado.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -93,7 +93,7 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "registrar_economia",
-            "description": "Registra um valor que o usuário guardou/economizou. Use SOMENTE quando o usuário digitar '@economia'.",
+            "description": "Registra um valor (dinheiro) que o usuário guardou ou economizou.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -103,7 +103,7 @@ TOOLS_DEFINITION = [
                     },
                     "descricao": {
                         "type": "string",
-                        "description": "Descrição ou motivo (ex: 'salário', 'freelance', 'mesada')."
+                        "description": "Descrição ou motivo (ex: 'salário', 'poupança', 'mesada')."
                     }
                 },
                 "required": ["valor"]
@@ -114,7 +114,7 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "consultar_economias",
-            "description": "Consulta o total de economias/poupança do usuário. Use SOMENTE quando o usuário digitar '@economia'.",
+            "description": "Consulta o total de economias ou dinheiro guardado pelo usuário.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -132,13 +132,13 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "pesquisar_web",
-            "description": "Pesquisa informações financeiras na internet. Use SOMENTE quando o usuário digitar '@pesquisa'.",
+            "description": "Pesquisa informações financeiras e econômicas atualizadas na internet.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Termo de busca (ex: 'taxa selic atual', 'melhores investimentos 2026')."
+                        "description": "Termo de busca (ex: 'taxa selic atual', 'valor dólar hoje')."
                     }
                 },
                 "required": ["query"]

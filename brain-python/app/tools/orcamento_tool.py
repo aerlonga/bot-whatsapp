@@ -39,6 +39,6 @@ async def consultar_orcamentos(**kwargs):
         logger.error(f"Erro ao consultar orçamentos no Spring: {e}")
         return {
             "success": False,
-            "result": "Não consegui acessar as informações do seu orçamento no momento (Serviço Fora do Ar).",
+            "result": "Não consegui acessar as informações do seu orçamentos no momento (Serviço Fora do Ar).",
             "data": None
         }

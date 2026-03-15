@@ -55,8 +55,8 @@ async def chat_endpoint(data: dict):
         improved_system_prompt = (
             f"{SYSTEM_PROMPT}\n\n"
             "REGRAS DE FERRAMENTAS:\n"
-            "1. NUNCA chame ferramentas automaticamente. Ferramentas SÓ ativam com os comandos: '@gasto', '@orçamento', '@economia', '@pesquisa'.\n"
-            "2. Se o usuário perguntar sobre gastos sem usar '@gasto', responda em texto que ele pode usar o comando.\n"
+            "1. NUNCA chame ferramentas automaticamente. Ferramentas SÓ ativam com os comandos: '!gasto', '!orçamento', '!economia', '!pesquisa'.\n"
+            "2. Se o usuário perguntar sobre gastos sem usar '!gasto', responda em texto que ele pode usar o comando.\n"
             "3. Repasse EXATAMENTE as confirmações retornadas pelas ferramentas.\n"
             "4. 'Sim'/'Não' do usuário é APENAS para confirmar ações pendentes.\n"
             "5. Responda de forma direta, curta e amigável."
@@ -76,13 +76,13 @@ async def chat_endpoint(data: dict):
         pending_action = await context_service.get_pending_action(user_id)
         
         available_tools = []
-        if trimmed_msg.startswith("@gasto"):
+        if trimmed_msg.startswith("!gasto"):
             available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] in ['registrar_gasto', 'consultar_gastos']])
-        elif trimmed_msg.startswith("@orçamento") or trimmed_msg.startswith("@orcamento"):
+        elif trimmed_msg.startswith("!orçamento") or trimmed_msg.startswith("!orcamento"):
             available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] in ['consultar_orcamentos', 'consultar_gastos']])
-        elif trimmed_msg.startswith("@economia"):
+        elif trimmed_msg.startswith("!economia"):
             available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] in ['registrar_economia', 'consultar_economias']])
-        elif trimmed_msg.startswith("@pesquisa"):
+        elif trimmed_msg.startswith("!pesquisa"):
             available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] == 'pesquisar_web'])
         
         # Se houver pendência ou o usuário parecer estar confirmando/negando, libera confirmar_acao
@@ -121,22 +121,34 @@ async def chat_endpoint(data: dict):
                 # Executa a tool
                 tool_result = await run_tool(tool_name, tool_args, user_id=user_id)
                 
-                if isinstance(tool_result, dict) and tool_result.get('result'):
-                    tool_replies.append(tool_result['result'])
-                
+                # Usamos a role 'tool' que é o esperado pelo Ollama após um tool_call.
+                # Isso evita que o modelo se perca ou retorne vazio.
+                tool_output = tool_result.get('result', str(tool_result))
                 messages.append({
                     'role': 'tool',
-                    'content': json.dumps(tool_result),
+                    'content': tool_output
                 })
                 
-            # Usa as mensagens formatadas das próprias tools, se disponíveis
-            if tool_replies:
-                final_reply = "\n".join(tool_replies)
-            else:
-                # Segunda chamada para Ollama formatar a resposta apenas como fallback
+            # Instrução final de síntese para garantir que o modelo fale com o usuário
+            messages.append({
+                'role': 'system',
+                'content': "SÍNTESE: Utilize os dados da ferramenta acima para responder ao usuário de forma direta. Se for um valor (Selic, Dólar, etc), informe o número exato encontrado."
+            })
+            
+            # Segunda chamada ao Ollama para processar os resultados
+            response = await ollama_service.chat(messages=messages)
+            ai_message = response.get('message', {})
+            final_reply = ai_message.get('content', '')
+
+            # FALLBACK: Se o modelo retornar vazio (bug comum em 8B), tentamos uma última vez sem ferramentas
+            if not final_reply.strip():
+                print("[Chat] Segundo pass retornou vazio. Tentando fallback simples.")
+                messages.append({
+                    'role': 'user',
+                    'content': "Por favor, apenas resume os dados acima para mim."
+                })
                 response = await ollama_service.chat(messages=messages)
-                ai_message = response.get('message', {})
-                final_reply = ai_message.get('content', '')
+                final_reply = response.get('message', {}).get('content', 'Não consegui processar a informação da pesquisa. Tente perguntar de outra forma.')
         elif _is_raw_tool_call(raw_content):
             # O modelo tentou chamar uma tool mas retornou como texto JSON (bug do Ollama)
             # Ignora o "fantasma" e pede ao modelo para responder em linguagem natural
@@ -145,7 +157,7 @@ async def chat_endpoint(data: dict):
             messages.append({
                 'role': 'user',
                 'content': (
-                    "[INSTRUÇÃO DO SISTEMA]: Você tentou chamar uma ferramenta sem o gatilho correto ('@gasto', '@orçamento', '@economia' ou '@pesquisa'). "
+                    "[INSTRUÇÃO DO SISTEMA]: Você tentou chamar uma ferramenta sem o gatilho correto ('!gasto', '!orçamento', '!economia' ou '!pesquisa'). "
                     "Por favor, responda a última mensagem do usuário SOMENTE em texto, sem chamar nenhuma ferramenta."
                 )
             })
@@ -226,4 +238,5 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+    print(f"Iniciando servidor FastAPI em http://0.0.0.0:8000 (Perfil: {PROFILE})")
     uvicorn.run(app, host="0.0.0.0", port=8000)

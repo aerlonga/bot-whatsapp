@@ -27,7 +27,7 @@ elif PROFILE == "LOW2":
 elif PROFILE == "MED":
     MODELO_TEXTO = "llama3.1:8b"
     MODELO_VISAO = "minicpm-v"
-    WHISPER_MODEL = "medium"
+    WHISPER_MODEL = "base"
 elif PROFILE == "HIGH":
     MODELO_TEXTO = "gpt-oss:20b"
     MODELO_VISAO = "minicpm-v"

@@ -226,11 +226,17 @@ const worker = new Worker('bot-ai', async (job) => {
 
         if (body && body.trim().toLowerCase() === '!help') {
             aiReply = `*Lista de Comandos:* ✨\n\n` +
-                `📌 *@gasto*
-                    Informe o [local], [valor],  [categoria] e [data] do gasto\n` +
-                `_Ex: @gasto Mercado 50 Alimentação no dia 01/01/2024_\n\n` +
-                `📊 *@orçamento* [categoria]\n` +
-                `_Ex: @orçamento Lazer ou apenas @orçamento_\n\n` +
+                `📌 *!gasto*\n` +
+                `Informe o [local], [valor], [categoria] e [data] do gasto\n` +
+                `_Ex: !gasto Mercado 50 Alimentação no dia 01/01/2024_\n\n` +
+                `📊 *!orçamento* [categoria]\n` +
+                `_Ex: !orçamento Lazer ou apenas !orçamento_\n\n` +
+                `💰 *!economia* [valor] [descrição]\n` +
+                `Registre o que você guardou/economizou\n` +
+                `_Ex: !economia 100 Sobra do salário_\n\n` +
+                `🔍 *!pesquisa* [termo]\n` +
+                `Busque informações financeiras atualizadas\n` +
+                `_Ex: !pesquisa  Taxa Selic hoje_\n\n` +
                 `💡 *Dica:* Utilize os comandos no início da mensagem!`;
         }
 
@@ -239,7 +245,7 @@ const worker = new Worker('bot-ai', async (job) => {
         let finalMessage = aiReply;
         if (!introducedUsers.has(chatId)) {
             // finalMessage = `*Olá, ${pushname}!* 👋\n\nSou o assistente inteligente do Aerlon. Enquanto ele não responde, posso te ajudar com algo? (Digite *!help* para ver meus comandos)\n\n${aiReply}`;
-            finalMessage = `*Olá, ${pushname}!* 👋\n\nSou a assistente inteligente do Aerlon. Enquanto ele não responde, posso te ajudar com algo? (Digite *!help* para ver meus comandos)`;
+            finalMessage = `*Olá, ${pushname}!* 👋\n\nSou uma assistente financeira inteligente. Posso te ajudar com controle de gastos, economias e orçamentos? (Digite *!help* para ver meus comandos)`;
             introducedUsers.add(chatId);
         }
 
