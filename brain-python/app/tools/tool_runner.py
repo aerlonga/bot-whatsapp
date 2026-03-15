@@ -1,5 +1,5 @@
 import logging
-from app.tools.financeiro_tool import registrar_gasto
+from app.tools.financeiro_tool import registrar_gasto, consultar_gastos
 from app.tools.orcamento_tool import consultar_orcamentos
 from app.tools.calendar_tool import marcar_reuniao
 from app.tools.email_tool import enviar_email
@@ -39,6 +39,9 @@ async def run_tool(name: str, args: dict, user_id: str | None = None) -> dict:
             
         elif name == "consultar_orcamentos":
             return await consultar_orcamentos(**args)
+            
+        elif name == "consultar_gastos":
+            return await consultar_gastos(user_id=user_id, **args)
             
         elif name == "marcar_reuniao":
             return await marcar_reuniao(**args)

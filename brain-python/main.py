@@ -28,15 +28,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ============================================
-# SYSTEM PROMPT
+# SYSTEM PROMPT (Escolha a versão de acordo com o modelo)
 # ============================================
+
+# --- VERSÃO MODELO 3B (Bot Focado / Baixo contexto) ---
+# SYSTEM_PROMPT = (
+#     "Você é a Inteligência Financeira do Aerlon. "
+#     "Sua função é EXCLUSIVA para gestão de gastos e orçamentos. "
+#     "Se o usuário falar sobre qualquer outro tema, informe educadamente que você é um bot especializado em finanças. "
+#     "Sempre apresente os comandos disponíveis: Digite !help para ajuda, "
+#     "@gasto para registrar despesas ou ver o histórico, e @orçamento para consultas de saldo e planejamento."
+# )
+
+# --- VERSÃO MODELO 8B (Assistente Versátil / Recomendado) ---
 SYSTEM_PROMPT = (
-    "Você é o assistente pessoal do Aerlon. "
-    "REGRA DE OURO: Você possui ferramentas financeiras, mas elas SÓ podem ser usadas se o usuário usar os comandos '@gasto' ou '@orçamento'. "
-    "Não mencione ferramentas financeiras, gastos ou orçamentos em mensagens de saudação ou conversas gerais, a menos que o usuário utilize os comandos. "
-    "Se o usuário perguntar sobre gastos ou finanças sem usar os comandos, oriente-o a usar '@gasto' para registrar despesas ou '@orçamento' para realizar consultas. "
-    "Se o usuário pedir para guardar uma informação, apenas confirme que guardou. "
-    "Responda sempre no mesmo idioma que o usuário. Seja direto e profissional."
+    "Você é o assistente pessoal do Aerlon, especializado em finanças. "
+    "Você pode manter conversas curtas sobre outros temas, mas sua prioridade e trabalho principal é cuidar das finanças. "
+    "Sempre informe ao usuário que você foca em finanças e apresente os comandos: "
+    "Digite !help para ver todos os comandos, '@gasto' para registrar ou ver seu histórico e '@orçamento' para planejar seus saldos."
 )
 
 # ============================================
@@ -60,14 +69,17 @@ async def chat_endpoint(data: dict):
         # Build context
         context_messages = await context_service.build_context_for_llama(user_id)
         
-        # PROMPT DE SISTEMA MELHORADO
+        # PROMPT DE SISTEMA MELHORADO PARA MODELOS PEQUENOS (LLAMA 3B)
         improved_system_prompt = (
-            f"{SYSTEM_PROMPT}\n"
-            "INSTRUÇÕES DE FERRAMENTAS:\n"
-            "1. Quando o usuário usar '@gasto', extraia Local, Valor, Categoria e Data. Se a data não for clara, use 'hoje'.\n"
-            "2. Após chamar 'registrar_gasto', você receberá uma mensagem de confirmação. REPASSE essa mensagem exatamente para o usuário.\n"
-            "3. Se o usuário confirmar (Sim) ou cancelar (Não), use a ferramenta 'confirmar_acao'.\n"
-            "4. NUNCA responda com JSON bruto. Sempre fale de forma natural e amigável."
+            f"{SYSTEM_PROMPT}\n\n"
+            "REGRAS CRÍTICAS DE COMPORTAMENTO (SIGA SEMPRE):\n"
+            "1. NUNCA chame uma ferramenta (tool/função) automaticamente. Ferramentas SÓ podem ser ativadas quando o usuário digitar EXPLICITAMENTE os comandos '@gasto' ou '@orçamento' no início da mensagem.\n"
+            "2. Se o usuário perguntar sobre gastos de forma genérica (ex: 'você consegue ver meus gastos?', 'quanto gastei?'), responda apenas em texto explicando que ele pode usar '@gasto' para isso. NÃO execute nenhuma ferramenta.\n"
+            "3. Se você chamar 'registrar_gasto', repasse EXATAMENTE a pergunta de confirmação que a ferramenta retornar.\n"
+            "4. O usuário responderá 'Sim' ou 'Não' APENAS em resposta a uma confirmação de registro de gasto.\n"
+            "5. NÃO peça 'Sim' ou 'Não' em conversas sobre outros temas (saudação, dúvidas, ajuda).\n"
+            "6. Evite repetir 'Olá' no meio de uma conversa em andamento.\n"
+            "7. Responda de forma direta, curta e amigável."
         )
         
         messages = [{'role': 'system', 'content': improved_system_prompt}]
@@ -85,9 +97,9 @@ async def chat_endpoint(data: dict):
         
         available_tools = []
         if trimmed_msg.startswith("@gasto"):
-            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] == 'registrar_gasto'])
+            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] in ['registrar_gasto', 'consultar_gastos']])
         elif trimmed_msg.startswith("@orçamento") or trimmed_msg.startswith("@orcamento"):
-            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] == 'consultar_orcamentos'])
+            available_tools.extend([t for t in TOOLS_DEFINITION if t['function']['name'] in ['consultar_orcamentos', 'consultar_gastos']])
         
         # Se houver pendência ou o usuário parecer estar confirmando/negando, libera confirmar_acao
         if pending_action or any(x in trimmed_msg for x in ["sim", "não", "nao", "confirmo", "cancela"]):
@@ -99,8 +111,21 @@ async def chat_endpoint(data: dict):
         response = await ollama_service.chat(messages=messages, tools=available_tools)
         
         ai_message = response.get('message', {})
+        raw_content = ai_message.get('content', '')
         
-        # Se Llama chamou alguma tool
+        # Detecta se o modelo retornou um tool call como texto JSON bruto
+        # (acontece quando o Ollama "pensa" mas não executa via tool_calls)
+        def _is_raw_tool_call(text: str) -> bool:
+            stripped = text.strip() if text else ""
+            if not stripped.startswith("{"):
+                return False
+            try:
+                parsed = json.loads(stripped)
+                return "name" in parsed and ("parameters" in parsed or "arguments" in parsed)
+            except (json.JSONDecodeError, ValueError):
+                return False
+        
+        # Se Llama chamou alguma tool via mecanismo oficial
         if ai_message.get('tool_calls'):
             messages.append(ai_message)  # Add assistant's tool call message
             
@@ -128,8 +153,23 @@ async def chat_endpoint(data: dict):
                 response = await ollama_service.chat(messages=messages)
                 ai_message = response.get('message', {})
                 final_reply = ai_message.get('content', '')
-        else:
+        elif _is_raw_tool_call(raw_content):
+            # O modelo tentou chamar uma tool mas retornou como texto JSON (bug do Ollama)
+            # Ignora o "fantasma" e pede ao modelo para responder em linguagem natural
+            logger.warning(f"[Chat] Detectado tool call como texto JSON bruto. Descartando e pedindo resposta natural.")
+            messages.append({'role': 'assistant', 'content': raw_content})
+            messages.append({
+                'role': 'user',
+                'content': (
+                    "[INSTRUÇÃO DO SISTEMA]: Você tentou chamar uma ferramenta sem o gatilho correto ('@gasto' ou '@orçamento'). "
+                    "Por favor, responda a última mensagem do usuário SOMENTE em texto, sem chamar nenhuma ferramenta."
+                )
+            })
+            response = await ollama_service.chat(messages=messages)
+            ai_message = response.get('message', {})
             final_reply = ai_message.get('content', '')
+        else:
+            final_reply = raw_content
         
         # Save memory
         user_msg = user_msg_content

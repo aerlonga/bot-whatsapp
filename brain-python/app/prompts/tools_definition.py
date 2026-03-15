@@ -117,5 +117,32 @@ TOOLS_DEFINITION = [
                 "required": ["destinatario", "assunto", "corpo"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "consultar_gastos",
+            "description": "REGRA EXTREMAMENTE IMPORTANTE: Você SÓ DEVE usar esta ferramenta SE e SOMENTE SE o usuário digitar EXPLICITAMENTE '@gasto' no início de sua mensagem. Se o usuário perguntar sobre gastos de forma casual ou retórica (ex: 'você consegue ver meus gastos?', 'quanto gastei hoje?'), NUNCA use esta ferramenta — responda apenas em texto. Consulta o resumo de gastos do usuário em um determinado período (ex: hoje, este mês, últimos 7 dias) ou em uma data específica.",
+
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "periodo": {
+                        "type": "string",
+                        "description": "Período da consulta.",
+                        "enum": ["hoje", "ontem", "semana", "mes", "total", "especifico"]
+                    },
+                    "data": {
+                        "type": "string",
+                        "description": "Data específica para a consulta (ex: '09/03/2026'). Use apenas se o período for 'especifico'."
+                    },
+                    "categoria": {
+                        "type": "string",
+                        "description": "Filtrar por uma categoria específica (opcional)."
+                    }
+                },
+                "required": ["periodo"]
+            }
+        }
     }
 ]

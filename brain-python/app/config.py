@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PROFILE = os.getenv("AI_PROFILE", "LOW").upper()
+PROFILE = os.getenv("AI_PROFILE", "MED").upper()
 
 # Verifica se a GPU está disponível
 HAS_GPU = torch.cuda.is_available()
@@ -24,12 +24,12 @@ elif PROFILE == "LOW2":
     MODELO_TEXTO = "llama3.2:3b"
     MODELO_VISAO = "minicpm-v"
     WHISPER_MODEL = "medium"
-elif PROFILE == "HIGH":
-    MODELO_TEXTO = "gpt-oss:20b"
+elif PROFILE == "MED":
+    MODELO_TEXTO = "llama3.1:8b"
     MODELO_VISAO = "minicpm-v"
     WHISPER_MODEL = "medium"
-else:
-    MODELO_TEXTO = "llama3.1:8b"
+elif PROFILE == "HIGH":
+    MODELO_TEXTO = "gpt-oss:20b"
     MODELO_VISAO = "minicpm-v"
     WHISPER_MODEL = "medium"
 

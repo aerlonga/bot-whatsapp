@@ -6,10 +6,10 @@ RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # PyTorch CPU version (para máquinas sem placa nvidia)
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # PyTorch com suporte a CUDA 12.1 (para placas nvidia)
-# RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

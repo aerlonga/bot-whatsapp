@@ -54,7 +54,7 @@ async def registrar_gasto(user_id=None, confirmed=False, **kwargs):
     data_gasto = _parse_brazilian_date(raw_data)
     
     if not confirmed:
-        # Salva para confirmação posterior
+        # Salva as info pra confirmação
         pending_args = {
             "estabelecimento": estabelecimento,
             "valor": valor,
@@ -135,3 +135,100 @@ async def registrar_gasto(user_id=None, confirmed=False, **kwargs):
         except Exception as db_err:
             logger.error(f"Erro no banco de fallback: {db_err}")
             return {"success": False, "result": "Falha crítica ao salvar o gasto."}
+
+async def consultar_gastos(user_id=None, periodo="hoje", categoria=None, **kwargs):
+    """
+    Consulta gastos no banco de dados local com agregação para performance e privacidade.
+    """
+    if not DATABASE_URL:
+        return {"success": False, "result": "Configuração de banco de dados ausente."}
+
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            # 1. Isolamento: Pega o contato_id do usuário que está chamando
+            contato_id = await _get_or_create_contato(conn, user_id)
+            
+            # 2. Define o filtro de data
+            date_filter = "AND data_gasto = CURRENT_DATE"
+            periodo_nome = "de hoje"
+            
+            if periodo == "ontem":
+                date_filter = "AND data_gasto = CURRENT_DATE - INTERVAL '1 day'"
+                periodo_nome = "de ontem"
+            elif periodo == "semana":
+                date_filter = "AND data_gasto >= CURRENT_DATE - INTERVAL '7 days'"
+                periodo_nome = "dos últimos 7 dias"
+            elif periodo == "mes":
+                date_filter = "AND data_gasto >= DATE_TRUNC('month', CURRENT_DATE)"
+                periodo_nome = "deste mês"
+            elif periodo == "total":
+                date_filter = ""
+                periodo_nome = "de todo o histórico"
+            elif periodo == "especifico":
+                raw_data = kwargs.get('data', '')
+                data_iso = _parse_brazilian_date(raw_data)
+                date_filter = f"AND data_gasto = '{data_iso}'"
+                periodo_nome = f"do dia {datetime.strptime(data_iso, '%Y-%m-%d').strftime('%d/%m/%Y')}"
+
+            # 3. Filtro de categoria
+            cat_filter = ""
+            params = [contato_id]
+            if categoria:
+                cat_filter = "AND categoria = $2"
+                params.append(categoria)
+
+            # 4. Agregação no Banco (Escalável!)
+            query = f'''
+                SELECT 
+                    COUNT(*) as total_compras,
+                    COALESCE(SUM(valor), 0) as soma_total
+                FROM gastos
+                WHERE contato_id = $1 {date_filter} {cat_filter}
+            '''
+            
+            row = await conn.fetchrow(query, *params)
+            
+            # 5. Busca detalhes (Top 5 para não estourar contexto)
+            details_query = f'''
+                SELECT estabelecimento, valor, data_gasto, categoria
+                FROM gastos
+                WHERE contato_id = $1 {date_filter} {cat_filter}
+                ORDER BY data_gasto DESC, criado_em DESC
+                LIMIT 5
+            '''
+            details = await conn.fetch(details_query, *params)
+            
+            soma = float(row['soma_total'])
+            qtd = row['total_compras']
+            
+            if qtd == 0:
+                return {
+                    "success": True, 
+                    "result": f"Você não possui gastos registrados {periodo_nome}."
+                }
+                
+            resumo = f"📊 *Resumo Financeiro ({periodo_nome})*\n"
+            resumo += f"- Total Gasto: *R$ {soma:.2f}*\n"
+            resumo += f"- Quantidade: {qtd} registros\n\n"
+            
+            if details:
+                resumo += "*Últimos lançamentos:*\n"
+                for d in details:
+                    data_str = d['data_gasto'].strftime("%d/%m")
+                    resumo += f"• {data_str}: {d['estabelecimento']} - R$ {float(d['valor']):.2f} ({d['categoria']})\n"
+            
+            if qtd > 5:
+                resumo += f"\n_... e outros {qtd-5} lançamentos._"
+                
+            return {
+                "success": True,
+                "result": resumo,
+                "data": {"total": soma, "qtd": qtd}
+            }
+            
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"Erro ao consultar gastos: {e}")
+        return {"success": False, "result": "Erro interno ao processar sua consulta financeira."}
